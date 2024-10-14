@@ -1,0 +1,19 @@
+{
+  "name": "Uczenie Nienadzorowane",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "runArgs": [
+    "--gpus", "all"
+  ],
+  "postCreateCommand": "pip install -r requirements.txt",
+  "remoteUser": "root",
+  "customizations": {
+    "jetbrains": {
+      "settings": {
+        "com.intellij:app:HttpConfigurable.use_proxy_pac": true,
+        "Docker:app:DockerSettings.dockerPath": "/usr/local/bin/docker"
+      }
+    }
+  }
+}

@@ -1,0 +1,8 @@
+numpy
+pytorch
+scikit-learn
+opencv-python
+jupyter
+polars
+seaborn
+streamlit

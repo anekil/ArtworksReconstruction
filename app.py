@@ -1,22 +1,30 @@
 import streamlit as st
-from streamlit_image_comparison import image_comparison
-from streamlit_image_coordinates import streamlit_image_coordinates
+import datasets as ds
+from random import randint
 
-value = streamlit_image_coordinates("static/1.jpg")
-st.write(value)
+@st.cache_resource
+def load_wikiart():
+    dataset = ds.load_dataset("parquet", data_files={'train': "local_wikiart.parquet"})
+    dataset = dataset.cast_column("image", ds.Image(mode="RGB"))
+    return dataset['train']
 
-st.markdown('# Porównanie obrazów')
 
-image_comparison(
-    img1="static/1.jpg",
-    img2="static/2.jpg",
-    width=700,
-    starting_position=50,
-    show_labels=True,
-    make_responsive=True,
-    in_memory=True,
-)
+with st.spinner('Loading dataset'):
+    df = load_wikiart()
 
-from streamlit_image_select import image_select
-img = image_select("Wybierz obraz", ["static/1.jpg", "static/2.jpg"] * 4)
-st.write(img)
+def show_artwork(artwork):
+    st.title(artwork["title"])
+    f'Artist: *{artwork["artist"]}*'
+    col1, col2 = st.columns(2)
+    with col1:
+        f'Style: {artwork["style"]}'
+        f'Genre: {artwork["genre"]}'
+    with col2:
+        artwork["date"]
+    artwork['image']
+
+x = 0
+if st.button('Show random artwork', icon="🎨"):
+    x = randint(0, len(df))
+x
+show_artwork(df[x])

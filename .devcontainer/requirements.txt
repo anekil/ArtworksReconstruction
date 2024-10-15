@@ -6,3 +6,4 @@ jupyter
 polars
 seaborn
 streamlit
+datasets

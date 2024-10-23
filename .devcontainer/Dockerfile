@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y \
 RUN pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 
 # Install other commonly used data science packages
-RUN pip3 install numpy pandas matplotlib scikit-learn
+RUN pip3 install numpy pandas matplotlib scikit-learn comet_ml datasets optuna
 
 # Set the working directory
 WORKDIR /workspace

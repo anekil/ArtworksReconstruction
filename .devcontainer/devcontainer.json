@@ -1,7 +1,7 @@
 {
   "name": "Uczenie nienadzorowane",
   "dockerFile": "Dockerfile",
-  "runArgs": ["--gpus", "all"],
+  "runArgs": ["--gpus", "all", "--shm-size", "8G"],
   "customizations": {
     "vscode": {
       "extensions": [
@@ -12,10 +12,5 @@
     }
   },
   "forwardPorts": [8888],
-  "postCreateCommand": "pip install jupyterlab",
-  "settings": {
-    "python.defaultInterpreterPath": "/usr/local/bin/python",
-    "python.linting.enabled": true,
-    "python.linting.pylintEnabled": true
-  }
+  "postCreateCommand": "pip install jupyterlab"
 }

@@ -6,7 +6,7 @@ import random
 import logging
 from comet_ml import Experiment
 import time
-
+from torchvision import models, transforms
 class SuperResolutionTrainer:
     def __init__(self, model, dataset, config):
         self.model = model
@@ -16,6 +16,21 @@ class SuperResolutionTrainer:
         self.logger = logging.getLogger("SuperResolutionTrainer")
         logging.basicConfig(level=logging.INFO)
         self.experiment = None
+
+    def initialize_model(self):
+        base_model = models.vgg19_bn(pretrained=True).features
+        for param in base_model.parameters():
+            param.requires_grad = False
+        model = nn.Sequential(
+            base_model,
+            nn.Conv2d(512, 256, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(256, 128, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(128, 3, kernel_size=3, padding=1),
+            nn.Sigmoid()
+        )
+        return model.to(self.device)
 
     def create_dataloaders(self, batch_size):
         total_size = len(self.dataset)
@@ -98,8 +113,6 @@ class SuperResolutionTrainer:
                 total = len(train_loader.dataset)
                 percent = 100. * batch_idx / len(train_loader)
                 print(f"Train Epoch: {epoch + 1} [{current}/{total} ({percent:.0f}%)]\tLoss: {loss.item():.6f}\tTime: {batch_time:.2f}s")
-
-                # Log metrics to Comet.ml
                 self.experiment.log_metric("batch_train_loss", loss.item(), step=global_step)
                 self.experiment.log_metric("batch_time", batch_time, step=global_step)
 
@@ -182,24 +195,16 @@ class SuperResolutionTrainer:
             lri_np = np.transpose(lri.detach().numpy(), (1, 2, 0))
             ri_np = np.transpose(ri.detach().numpy(), (1, 2, 0))
             hri_np = np.transpose(hri.detach().numpy(), (1, 2, 0))
-
-            # Rescale images to [0,1]
             lri_np = (lri_np - lri_np.min()) / (lri_np.max() - lri_np.min())
             ri_np = (ri_np - ri_np.min()) / (ri_np.max() - ri_np.min())
             hri_np = (hri_np - hri_np.min()) / (hri_np.max() - hri_np.min())
 
-            # Stack images horizontally: Low-res | Reconstructed | High-res
+            # Low-res | Reconstructed | High-res
             combined_image = np.hstack((lri_np, ri_np, hri_np))
-
-            # Convert to uint8
             combined_image = (combined_image * 255).astype(np.uint8)
-
-            # Log image to Comet.ml
             experiment.log_image(
                 combined_image,
                 name=f"superres_epoch_{epoch}_idx_{idx}",
                 step=epoch
             )
-
-        # Optionally, you can print a message indicating images were logged
         print(f"Logged {num_images} images for Epoch {epoch}")

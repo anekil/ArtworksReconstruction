@@ -21,6 +21,19 @@ class InpaintingTrainer:
         logging.basicConfig(level=logging.INFO)
         self.experiment = None
 
+    def initialize_model(self):
+        base_model = models.resnet18(pretrained=True)
+        for param in base_model.parameters():
+            param.requires_grad = False
+        base_model.fc = nn.Sequential(
+            nn.Linear(base_model.fc.in_features, 512),
+            nn.ReLU(),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, 3 * 226 * 226),
+            nn.Sigmoid()
+        )
+        return base_model.to(self.device)
     def create_dataloaders(self, batch_size):
         total_size = len(self.dataset)
         train_size = int(0.7 * total_size)
@@ -132,7 +145,7 @@ class InpaintingTrainer:
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
                 patience_counter = 0
-                torch.save(model.state_dict(), f"{self.config['model_save_path']}/best_inpainting_model.pth")
+                #torch.save(model.state_dict(), f"{self.config['model_save_path']}/best_inpainting_model.pth")
                 print(f"Validation loss decreased ({best_val_loss:.6f}). Saving model...")
             else:
                 patience_counter += 1
@@ -150,7 +163,6 @@ class InpaintingTrainer:
             self.experiment.log_text(f"Epoch {epoch + 1} completed in {epoch_duration:.2f}s")
 
         self.test(model, test_loader, criterion)
-
         self.experiment.end()
 
     def test(self, model, test_loader, criterion):
@@ -171,7 +183,6 @@ class InpaintingTrainer:
         self.log_images(self.experiment, test_loader, 'test')
 
     def log_images(self, experiment, data_loader, epoch):
-
         for damaged_images, original_images in data_loader:
             damaged_images = damaged_images.to(self.device)
             original_images = original_images.to(self.device)
@@ -185,28 +196,18 @@ class InpaintingTrainer:
             di = damaged_images[idx].cpu()
             ri = outputs[idx].cpu()
             oi = original_images[idx].cpu()
-
             di_np = np.transpose(di.detach().numpy(), (1, 2, 0))
             ri_np = np.transpose(ri.detach().numpy(), (1, 2, 0))
             oi_np = np.transpose(oi.detach().numpy(), (1, 2, 0))
-
-            # Rescale images to [0,1]
             di_np = (di_np - di_np.min()) / (di_np.max() - di_np.min())
             ri_np = (ri_np - ri_np.min()) / (ri_np.max() - ri_np.min())
             oi_np = (oi_np - oi_np.min()) / (oi_np.max() - oi_np.min())
-
-            # Stack images horizontally: Damaged | Reconstructed | Original
+            #Damaged | Reconstructed | Original
             combined_image = np.hstack((di_np, ri_np, oi_np))
-
-            # Convert to uint8
             combined_image = (combined_image * 255).astype(np.uint8)
-
-            # Log image to Comet.ml
             experiment.log_image(
                 combined_image,
                 name=f"inpainting_epoch_{epoch}_idx_{idx}",
                 step=epoch
             )
-
-        # Optionally, you can print a message indicating images were logged
         print(f"Logged {num_images} images for Epoch {epoch}")

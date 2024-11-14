@@ -8,6 +8,7 @@ from PIL import Image
 from UNN.dataloading.WikiArtDataset import WikiArtDataset
 
 def apply_damage(image):
+
     img = np.array(image)
     height, width, _ = img.shape
     mask_size = int(min(height, width) // 4)
@@ -18,35 +19,23 @@ def apply_damage(image):
 
 class InpaintingDataset(WikiArtDataset):
     def __init__(self, df, transform=None, mask_size=(50, 50)):
-        super().__init__(df, transform)
+        super().__init__(df)
+        self.df = df
+        self.transform = transform
         self.mask_size = mask_size
 
     def __getitem__(self, idx):
         image = super().__getitem__(idx)
-
+        if isinstance(image, torch.Tensor):
+            image = transforms.ToPILImage()(image)
         damaged_image = apply_damage(image)
-        resize_transform = transforms.Resize((224, 224))
-        image_resized = resize_transform(image)
         if self.transform:
+            original_image = self.transform(image)
             damaged_image = self.transform(damaged_image)
-            original_image = self.transform(image_resized)
         else:
-            to_tensor = transforms.ToTensor()
-            damaged_image = to_tensor(damaged_image)
-            original_image = to_tensor(image_resized)
+            original_image = image
 
         return damaged_image, original_image
 
-    def apply_random_mask(self, image):
-        _, H, W = image.size()
-        mask = torch.ones_like(image)
-
-        mask_height = random.randint(H // 8, H // 4)
-        mask_width = random.randint(W // 8, W // 4)
-        top = random.randint(0, H - mask_height)
-        left = random.randint(0, W - mask_width)
-
-        mask[:, top:top + mask_height, left:left + mask_width] = 0
-        masked_image = image * mask
-
-        return masked_image
+    def __len__(self):
+        return len(self.df)

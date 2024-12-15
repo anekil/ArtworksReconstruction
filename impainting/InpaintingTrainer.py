@@ -11,6 +11,7 @@ import logging
 from comet_ml import Experiment
 import optuna
 import time
+
 class InpaintingTrainer:
     def __init__(self, model, dataset, config):
         self.model = model

@@ -7,6 +7,7 @@ import logging
 from comet_ml import Experiment
 import time
 from torchvision import models, transforms
+
 class SuperResolutionTrainer:
     def __init__(self, model, dataset, config):
         self.model = model

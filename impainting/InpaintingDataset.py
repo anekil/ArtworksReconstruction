@@ -5,7 +5,7 @@ from torchvision import transforms
 
 from PIL import Image
 
-from UNN.dataloading.WikiArtDataset import WikiArtDataset
+from dataloading.WikiArtDataset import WikiArtDataset
 
 def apply_damage(image):
 

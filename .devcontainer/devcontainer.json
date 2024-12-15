@@ -1,19 +1,16 @@
 {
-  "name": "Uczenie Nienadzorowane",
-  "build": {
-    "dockerfile": "Dockerfile"
-  },
-  "runArgs": [
-    "--gpus", "all"
-  ],
-  "postCreateCommand": "pip install -r requirements.txt",
-  "remoteUser": "root",
+  "name": "Uczenie nienadzorowane",
+  "dockerFile": "Dockerfile",
+  "runArgs": ["--gpus", "all", "--shm-size", "8G"],
   "customizations": {
-    "jetbrains": {
-      "settings": {
-        "com.intellij:app:HttpConfigurable.use_proxy_pac": true,
-        "Docker:app:DockerSettings.dockerPath": "/usr/local/bin/docker"
-      }
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-toolsai.jupyter"
+      ]
     }
-  }
+  },
+  "forwardPorts": [8888],
+  "postCreateCommand": "pip install jupyterlab"
 }

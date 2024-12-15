@@ -1,5 +1,4 @@
 numpy
-pytorch
 scikit-learn
 opencv-python
 jupyter
@@ -7,3 +6,5 @@ polars
 seaborn
 streamlit
 datasets
+optuna
+comet_ml

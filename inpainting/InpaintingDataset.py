@@ -13,7 +13,7 @@ class InpaintingDataset(torch.utils.data.Dataset):
         self.transform = transform
 
     def apply_damage(self, image):
-        img = np.array(image)  # Convert PIL Image to NumPy array
+        img = np.array(image)
         height, width, _ = img.shape
         mask = np.zeros((height, width), dtype=np.uint8)
 

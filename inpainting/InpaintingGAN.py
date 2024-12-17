@@ -37,14 +37,22 @@ class Generator(nn.Module):
             nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
+
+            nn.Conv2d(256, 512, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
         )
 
         self.bottleneck = nn.Sequential(
-            ResidualBlock(256),
-            ResidualBlock(256),
+            ResidualBlock(512),
+            ResidualBlock(512),
         )
 
         self.decoder = nn.Sequential(
+            nn.ConvTranspose2d(512, 256, kernel_size=3, stride=1, padding=1, bias=False),  # Keep dimensions
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+
             nn.ConvTranspose2d(256, 128, kernel_size=3, stride=1, padding=1, bias=False),  # Keep dimensions
             nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
@@ -63,15 +71,14 @@ class Generator(nn.Module):
         x = self.decoder(x)
         return x
 
-class Discriminator(nn.Module):
+class Critique(nn.Module):
     def __init__(self):
-        super(Discriminator, self).__init__()
+        super(Critique, self).__init__()
         self.feature_extractor = timm.create_model("resnet18", pretrained=True, num_classes=0)
         self.classifier = nn.Sequential(
             nn.Linear(512, 256),
             nn.ReLU(),
             nn.Linear(256, 1),
-            nn.Sigmoid()
         )
 
     def forward(self, x):
@@ -80,15 +87,17 @@ class Discriminator(nn.Module):
         return validity
 
 class GANInpainting(pl.LightningModule):
-    def __init__(self, generator, discriminator, lr=1e-4):
+    def __init__(self, generator, critique, lr=1e-4):
         super(GANInpainting, self).__init__()
         self.save_hyperparameters()
 
         self.generator = generator
-        self.discriminator = discriminator
+        self.critique = critique
         self.lr = lr
+        self.n_critic = 5
+        self.lambda_gp = 10.0
 
-        self.adversarial_loss = nn.BCEWithLogitsLoss()
+        self.adversarial_loss = None
         self.reconstruction_loss = nn.L1Loss()
         self.automatic_optimization = False
 
@@ -96,8 +105,31 @@ class GANInpainting(pl.LightningModule):
         return self.generator(damaged_image)
 
     def training_step(self, batch, batch_idx):
-        g_opt, d_opt = self.optimizers()
+        g_opt, c_opt = self.optimizers()
         damaged_image, original_image = batch
+
+        # -----------------------
+        # Train Critique
+        # -----------------------
+        for _ in range(self.n_critic):
+            # Real images
+            real_preds = self.critique(original_image)
+            fake_images = self(damaged_image).detach()
+            fake_preds = self.critique(fake_images)
+
+            # Wasserstein loss for critique
+            c_loss = -(real_preds.mean() - fake_preds.mean())
+
+            # Gradient penalty (WGAN-GP)
+            gp = self.gradient_penalty(original_image, fake_images)
+            c_loss += self.lambda_gp * gp
+
+            self.log("critique_loss", c_loss, on_step=True, on_epoch=True, prog_bar=True)
+
+            # Backpropagation and optimization step for the critique
+            self.manual_backward(c_loss)
+            c_opt.step()
+            c_opt.zero_grad()
 
         # -----------------------
         # Train Generator
@@ -105,47 +137,44 @@ class GANInpainting(pl.LightningModule):
         # Generate inpainted images
         inpainted_image = self(damaged_image)
 
-        # Adversarial loss (fool the discriminator)
-        fake_preds = self.discriminator(inpainted_image)
-        valid_labels = torch.ones_like(fake_preds, device=self.device)
-        g_adv_loss = self.adversarial_loss(fake_preds, valid_labels)
+        # Adversarial loss (fool the critique)
+        fake_preds = self.critique(inpainted_image)
+        g_adv_loss = -fake_preds.mean()  # Minimize negative mean of fake_preds
 
         # Reconstruction loss (difference with original image)
         g_rec_loss = self.reconstruction_loss(inpainted_image, original_image)
 
         # Total generator loss
         g_loss = g_adv_loss + 100 * g_rec_loss
-        self.log("g_loss", g_loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("generator_loss", g_loss, on_step=True, on_epoch=True, prog_bar=True)
 
         # Backpropagation and optimization step for the generator
         self.manual_backward(g_loss)
         g_opt.step()
         g_opt.zero_grad()
 
-        # -----------------------
-        # Train Discriminator
-        # -----------------------
-        # Real images
-        real_preds = self.discriminator(original_image)
-        valid_labels = torch.ones_like(real_preds, device=self.device)
-        d_real_loss = self.adversarial_loss(real_preds, valid_labels)
+        return {"generator_loss": g_loss, "critique_loss": c_loss}
 
-        # Fake images
-        fake_images = self(damaged_image).detach()  # Detach to prevent gradients
-        fake_preds = self.discriminator(fake_images)
-        fake_labels = torch.zeros_like(fake_preds, device=self.device)
-        d_fake_loss = self.adversarial_loss(fake_preds, fake_labels)
+    def gradient_penalty(self, real_images, fake_images):
+        batch_size, c, h, w = real_images.size()
+        epsilon = torch.rand(batch_size, 1, 1, 1, device=self.device).expand_as(real_images)
+        interpolated = epsilon * real_images + (1 - epsilon) * fake_images
+        interpolated.requires_grad_(True)
 
-        # Total discriminator loss
-        d_loss = (d_real_loss + d_fake_loss) / 2
-        self.log("d_loss", d_loss, on_step=True, on_epoch=True, prog_bar=True)
+        interpolated_preds = self.critique(interpolated)
 
-        # Backpropagation and optimization step for the discriminator
-        self.manual_backward(d_loss)
-        d_opt.step()
-        d_opt.zero_grad()
+        gradients = torch.autograd.grad(
+            outputs=interpolated_preds,
+            inputs=interpolated,
+            grad_outputs=torch.ones_like(interpolated_preds, device=self.device),
+            create_graph=True,
+            retain_graph=True,
+        )[0]
 
-        return {"g_loss": g_loss, "d_loss": d_loss}
+        gradients = gradients.view(batch_size, -1)
+        gradient_norm = gradients.norm(2, dim=1)
+        gp = ((gradient_norm - 1) ** 2).mean()
+        return gp
 
     def validation_step(self, batch, batch_idx):
         damaged_image, original_image = batch
@@ -180,7 +209,7 @@ class GANInpainting(pl.LightningModule):
 
     def configure_optimizers(self):
         g_opt = torch.optim.Adam(self.generator.parameters(), lr=self.lr, betas=(0.5, 0.999))
-        d_opt = torch.optim.Adam(self.discriminator.parameters(), lr=self.lr, betas=(0.5, 0.999))
+        d_opt = torch.optim.Adam(self.critique.parameters(), lr=self.lr, betas=(0.5, 0.999))
         return [g_opt, d_opt]
 
     def _create_image_grid(self, damaged_image, inpainted_image, original_image):

@@ -231,6 +231,8 @@ class AutoencoderTrainer:
 
         criterion = nn.MSELoss()
 
+        # model.load_state_dict(torch.load(f"{self.config['model_save_path']}/best_model.pth", weights_only=True))
+
         optimizer = optim.Adam(
             model.parameters(),
             lr=hyperparameters["learning_rate"],
@@ -240,34 +242,40 @@ class AutoencoderTrainer:
         best_val_loss = float('inf')
         patience = self.config["patience"]
         patience_counter = 0
-        
-        for epoch in range(self.config["max_epochs"]):
-            train_loss = self.train_epoch(model, train_loader, criterion, optimizer, experiment)
-            val_loss = self.validate(model, val_loader, criterion)
 
-            experiment.log_metric("train_loss", train_loss, step=epoch)
-            experiment.log_metric("val_loss", val_loss, step=epoch)
+        try:
+            
+            for epoch in range(self.config["max_epochs"]):
+                train_loss = self.train_epoch(model, train_loader, criterion, optimizer, experiment)
+                val_loss = self.validate(model, val_loader, criterion)
 
-            with experiment.test() as test, torch.no_grad() as nograd:
-                for data, _ in val_loader:
-                    data = data.to(self.device)
-                    out_data, _, _ = model(data)
-                    self.log_images(experiment, data, out_data, epoch)
+                experiment.log_metric("train_loss", train_loss, step=epoch)
+                experiment.log_metric("val_loss", val_loss, step=epoch)
+
+                with experiment.test() as test, torch.no_grad() as nograd:
+                    for data, _ in val_loader:
+                        data = data.to(self.device)
+                        out_data, _, _ = model(data)
+                        self.log_images(experiment, data, out_data, epoch)
+                        break
+
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    patience_counter = 0
+
+                    torch.save(model.state_dict(), f"{self.config['model_save_path']}/best_model.pth")
+                else:
+                    patience_counter += 1
+                    
+                if patience_counter >= patience:
+                    self.logger.info(f"Early stopping triggered at epoch {epoch}")
                     break
 
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                patience_counter = 0
+                self.logger.info(f"Epoch {epoch}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}")
 
-                torch.save(model.state_dict(), f"{self.config['model_save_path']}/best_model.pth")
-            else:
-                patience_counter += 1
-                
-            if patience_counter >= patience:
-                self.logger.info(f"Early stopping triggered at epoch {epoch}")
-                break
-
-            self.logger.info(f"Epoch {epoch}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}")
+        except KeyboardInterrupt:
+            print("Experiment interrupted")
+            pass
 
         log_model(experiment, model, model_name="AutoEncoder")
         experiment.log_metric("best_val_loss", best_val_loss)
@@ -292,8 +300,8 @@ class AutoencoderTrainer:
 config = {
     "project_name": "autoencoder",
     "model_save_path": "./autoencoder/models/",
-    "max_epochs": 100,
-    "patience": 25,
+    "max_epochs": 250,
+    "patience": 40,
     "n_trials": 50,
     "timeout": 72000
 }

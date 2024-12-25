@@ -23,39 +23,45 @@ class Decoder(nn.Module):
 
         blocks = [
             nn.Conv2d(10, 240, 3, padding=1),
-            nn.Conv2d(240, 240, 1),
-            ResBlock(240, 240, 120),
-            nn.Conv2d(240, 240, 1),
-            ResBlock(240, 240, 120),
-            ResBlock(240, 240, 120),
+
             nn.ReLU(inplace=True),
-            
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-            nn.Conv2d(240, 120, 3, padding=1),
-            ResBlock(120, 120, 60),
-            nn.Conv2d(120, 120, 1),
+            nn.Conv2d(240, 240, 1),
+
+            ResBlock(240, 240, 120),
+
             nn.ReLU(inplace=True),
-            
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-            nn.Conv2d(120, 120, 3, padding=1),
+            nn.Conv2d(240, 240, 1),
+
+            ResBlock(240, 240, 120),
+            ResBlock(240, 240, 120),
+
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(240, 120, kernel_size=4, stride=2, padding=1),
+            ResBlock(120, 120, 60),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(120, 120, 1),
+
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(120, 120, kernel_size=4, stride=2, padding=1),
             nn.Conv2d(120, 120, 1),
             ResBlock(120, 120, 60),
+            nn.ReLU(inplace=True),
             nn.Conv2d(120, 120, 3, padding=2, dilation=2),
+
             nn.ReLU(inplace=True),
-            
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-            nn.Conv2d(120, 90, 3, padding=1),
+            nn.ConvTranspose2d(120, 90, kernel_size=4, stride=2, padding=1),
             ResBlock(90, 90, 60),
+            nn.ReLU(inplace=True),
             nn.Conv2d(90, 60, 1),
             nn.ReLU(inplace=True),
             nn.Conv2d(60, 60, 3, padding=1),
+
             nn.ReLU(inplace=True),
-            
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-            nn.Conv2d(60, 60, 3, padding=1),
+            nn.ConvTranspose2d(60, 60, kernel_size=4, stride=2, padding=1),
             nn.ReLU(inplace=True),
             nn.Conv2d(60, 30, 1),
             nn.ReLU(inplace=True),
+            
             nn.Conv2d(30, out_dim, 3, padding=1),
         ]
         

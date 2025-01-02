@@ -5,7 +5,6 @@ import pytorch_lightning as pl
 import torchvision
 import torch.nn.functional as F
 
-
 class DepthwiseSeparableConv(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=3, padding=1, activation=True):
         super().__init__()
@@ -16,25 +15,51 @@ class DepthwiseSeparableConv(nn.Module):
     def forward(self, x):
         x = self.depthwise(x)
         x = self.pointwise(x)
-        return self.activation(x)
+        x = self.activation(x)
+        return x
 
-class PaintingBranch(nn.Module):
-    def __init__(self, features):
-        super().__init__()
-        self.layers = nn.ModuleList()
-        for feature in features[::-1]:
-            self.layers.append(nn.Sequential(
-                nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True),
-                DepthwiseSeparableConv(feature, feature),
-                nn.Conv2d(feature, 3, kernel_size=1)
-            ))
+class ResizeConv(DepthwiseSeparableConv):
+    def __init__(self, in_channels, out_channels, kernel_size=3, padding=1, activation=True, scale=0.5):
+        super().__init__(in_channels, out_channels, kernel_size, padding, activation)
+        self.scale = nn.Upsample(scale_factor=scale, mode="bilinear", align_corners=True)
 
     def forward(self, x):
-        outputs = []
-        for layer in self.layers:
-            x = layer(x)
-            outputs.append(x)
-        return outputs
+        x = super().forward(x)
+        x = self.scale(x)
+        return x
+
+
+class PaintingBranch(nn.Module):
+    def __init__(self, features, out_channels=3):
+        super().__init__()
+
+        self.first_layer = nn.Sequential(
+            nn.Conv2d(out_channels, out_channels, kernel_size=1),
+            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
+        )
+        self.intermediate_layer = nn.Sequential(
+            nn.Conv2d(out_channels * 2, out_channels, kernel_size=1),
+            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
+        )
+        self.last_layer = nn.Conv2d(out_channels * 2, out_channels, kernel_size=1)
+
+        self.to_rgb = nn.ModuleList([
+            nn.Conv2d(feature, out_channels, kernel_size=1) for feature in features
+        ])
+
+    def forward(self, skip_connections):
+        x = None
+        for to_rgb, skip in zip(self.to_rgb[:-1], skip_connections[:-1]):
+            skip = to_rgb(skip)
+            if x is None:
+                x = self.first_layer(skip)
+            else:
+                x = torch.cat((x, skip), dim=1)
+                x = self.intermediate_layer(x)
+        last_skip = self.to_rgb[-1](skip_connections[-1])
+        x = torch.cat((x, last_skip), dim=1)
+        x = self.last_layer(x)
+        return x
 
 
 class UNetGenerator(nn.Module):
@@ -44,26 +69,19 @@ class UNetGenerator(nn.Module):
             features = [64, 128, 256, 512]
         self.encoder = nn.ModuleList()
         self.decoder = nn.ModuleList()
-        # self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
 
-        # Encoder: Downsampling path
         for feature in features:
-            self.encoder.append(DepthwiseSeparableConv(in_channels, feature))
-            self.encoder.append(nn.Upsample(scale_factor=0.5, mode="bilinear", align_corners=True))
+            self.encoder.append(ResizeConv(in_channels, feature, scale=0.5))
             in_channels = feature
 
-        # Bottleneck
-        self.bottleneck = DepthwiseSeparableConv(features[-1], features[-1] * 2)
+        self.bottleneck = DepthwiseSeparableConv(features[-1], features[-1])
 
-        # Decoder: Upsampling path
         for feature in reversed(features):
-            self.decoder.append(nn.Sequential(
-                nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True),
-                nn.Conv2d(feature * 2, feature, kernel_size=1),
-                DepthwiseSeparableConv(feature, feature)
-            ))
+            self.decoder.append(ResizeConv(in_channels + feature, feature, scale=2))
+            in_channels = feature
 
-        self.final_conv = nn.Conv2d(features[0], out_channels, kernel_size=1)
+        features.append(features[-1])
+        self.painting_branch = PaintingBranch(reversed(features), out_channels)
 
     def forward(self, x):
         # Main Branch
@@ -71,56 +89,29 @@ class UNetGenerator(nn.Module):
         for layer in self.encoder:
             x = layer(x)
             skip_connections.append(x)
-            # x = self.pool(x)
 
         # Bottleneck
+        painting_connections = []
         x = self.bottleneck(x)
+        painting_connections.append(x)
+
         skip_connections = skip_connections[::-1]
 
         # Decoder
-        for idx, layer in enumerate(self.decoder):
+        for layer, skip in zip(self.decoder, skip_connections):
+            x = torch.cat((x, skip), dim=1)
             x = layer(x)
-            x = torch.cat((x, skip_connections[idx]), dim=1)
+            painting_connections.append(x)
 
-        # Painting Branch
-        painting_outputs = self.painting_branch(x)
+        x = self.painting_branch(painting_connections)
+        # print('Painting branch', x.shape)
+        x = torch.sigmoid(x)
+        # print("Input values range:", x.min(), x.max())
+        return x
 
-        # Final Composition
-        composite_output = painting_outputs[-1]  # Use final painting branch output for simplicity
-        return composite_output, painting_outputs
-
-    # def forward(self, x):
-    #     """
-    #     Args:
-    #         x: masked input image [batch_size, 3, H, W]
-    #         mask: binary mask [batch_size, 1, H, W]
-    #     Returns:
-    #         Output: inpainted regions combined with input
-    #     """
-    #     # x = torch.cat((x, mask), dim=1)  # Combine image and mask as 4 channels
-    #     skip_connections = []
-    #
-    #     # Encoder
-    #     for layer in self.encoder:
-    #         x = layer(x)
-    #         skip_connections.append(x)
-    #         x = self.pool(x)
-    #
-    #     # Bottleneck
-    #     x = self.bottleneck(x)
-    #     skip_connections = skip_connections[::-1]
-    #
-    #     # Decoder
-    #     for idx, layer in enumerate(self.decoder):
-    #         x = layer(x)
-    #         x = torch.cat((x, skip_connections[idx]), dim=1)
-    #
-    #     output = self.final_conv(x)
-    #     return torch.sigmoid(output)
-
-class Discriminator(nn.Module):
+class Critique(nn.Module):
     def __init__(self, in_channels=3, features=None):
-        super().__init__()
+        super(Critique, self).__init__()
         if features is None:
             features = [64, 128, 256]
         layers = []
@@ -138,194 +129,131 @@ class Discriminator(nn.Module):
     def forward(self, x):
         return self.model(x)
 
-# class Critique(nn.Module):
-#     def __init__(self):
-#         super(Critique, self).__init__()
-#         self.feature_extractor = timm.create_model("resnet18", pretrained=True, num_classes=0)
-#         self.classifier = nn.Sequential(
-#             nn.Linear(512, 256),
-#             nn.ReLU(),
-#             nn.Linear(256, 1),
-#         )
-#
-#     def forward(self, x):
-#         features = self.feature_extractor(x)
-#         validity = self.classifier(features)
-#         return validity
-
-class InpaintingMOGAN(pl.LightningModule):
-    def __init__(self, lr_g=1e-4, lr_d=4e-4):
-        super().__init__()
+class InpaintingMIGAN(pl.LightningModule):
+    def __init__(self, lr=1e-4):
+        super(InpaintingMIGAN, self).__init__()
         self.save_hyperparameters()
 
-        # Generator and Discriminator
         self.generator = UNetGenerator()
-        self.discriminator = Discriminator()
+        self.critique = Critique()
+        self.lr = lr
+        self.n_critic = 5
+        self.lambda_gp = 10.0
 
-        # Loss Functions
-        # self.adv_loss = nn.BCEWithLogitsLoss()
-        # self.recon_loss = nn.L1Loss()
-        self.lr_g = lr_g
-        self.lr_d = lr_d
+        self.adversarial_loss = None
+        self.reconstruction_loss = nn.L1Loss()
         self.automatic_optimization = False
 
-    def forward(self, x):
-        return self.generator(x)
-
-    def adversarial_loss(self, y_pred, is_real):
-        """Adversarial loss to distinguish real and fake images."""
-        target = torch.ones_like(y_pred) if is_real else torch.zeros_like(y_pred)
-        return self.adv_loss(y_pred, target)
-
-    def loss_function(self, composite_output, painting_outputs, real_image, mask):
-        loss_composite = F.mse_loss(composite_output, real_image)
-        loss_painting = sum(F.mse_loss(out, real_image) for out in painting_outputs) / len(painting_outputs)
-        return loss_composite + loss_painting
+    def forward(self, damaged_image):
+        return self.generator(damaged_image)
 
     def training_step(self, batch, batch_idx):
-        real_image, mask = batch  # Ground truth image and mask
-        masked_input = real_image * (1 - mask)  # Create corrupted input by applying the mask
+        g_opt, c_opt = self.optimizers()
+        damaged_image, original_image = batch
 
-        # Fetch optimizers
-        opt_gen, opt_disc = self.optimizers()
+        # -----------------------
+        # Train Critique
+        # -----------------------
+        for _ in range(self.n_critic):
+            # Real images
+            real_preds = self.critique(original_image)
+            fake_images = self(damaged_image).detach()
+            fake_preds = self.critique(fake_images)
 
-        # -------------------------
-        # 1. Generator Step
-        # -------------------------
-        composite_output, painting_outputs = self.generator(masked_input)  # Generator output
+            # Wasserstein loss for critique
+            c_loss = -(real_preds.mean() - fake_preds.mean())
 
-        # Compute generator loss
-        gen_loss = self.loss_function(composite_output, painting_outputs, real_image, mask)
+            # Gradient penalty (WGAN-GP)
+            gp = self.gradient_penalty(original_image, fake_images)
+            c_loss += self.lambda_gp * gp
 
-        # Manual backward for the generator
-        self.manual_backward(gen_loss, opt_gen)
-        opt_gen.step()
-        opt_gen.zero_grad()
+            self.log("critique_loss", c_loss, on_step=True, on_epoch=True, prog_bar=True)
 
-        # Log generator loss
-        self.log("gen_loss", gen_loss, on_epoch=True, prog_bar=True)
+            # Backpropagation and optimization step for the critique
+            self.manual_backward(c_loss)
+            c_opt.step()
+            c_opt.zero_grad()
 
-        # -------------------------
-        # 2. Discriminator Step
-        # -------------------------
-        composite_output = composite_output.detach()  # Detach to avoid gradients from generator
-        real_pred = self.discriminator(real_image)  # Discriminator on real image
-        fake_pred = self.discriminator(composite_output)  # Discriminator on fake image
+        # -----------------------
+        # Train Generator
+        # -----------------------
+        # Generate inpainted images
+        inpainted_image = self(damaged_image)
 
-        # Discriminator loss
-        real_loss = F.mse_loss(real_pred, torch.ones_like(real_pred))
-        fake_loss = F.mse_loss(fake_pred, torch.zeros_like(fake_pred))
-        disc_loss = (real_loss + fake_loss) / 2
+        # Adversarial loss (fool the critique)
+        fake_preds = self.critique(inpainted_image)
+        g_adv_loss = -fake_preds.mean()  # Minimize negative mean of fake_preds
 
-        # Manual backward for the discriminator
-        self.manual_backward(disc_loss, opt_disc)
-        opt_disc.step()
-        opt_disc.zero_grad()
+        # Reconstruction loss (difference with original image)
+        g_rec_loss = self.reconstruction_loss(inpainted_image, original_image)
 
-        # Log discriminator loss
-        self.log("disc_loss", disc_loss, on_epoch=True, prog_bar=True)
+        # Total generator loss
+        g_loss = g_adv_loss + 100 * g_rec_loss
+        self.log("generator_loss", g_loss, on_step=True, on_epoch=True, prog_bar=True)
 
-    def configure_optimizers(self):
-        g_optimizer = torch.optim.Adam(self.generator.parameters(), lr=self.lr_g, betas=(0.5, 0.999))
-        d_optimizer = torch.optim.Adam(self.discriminator.parameters(), lr=self.lr_d, betas=(0.5, 0.999))
-        return g_optimizer, d_optimizer
+        # Backpropagation and optimization step for the generator
+        self.manual_backward(g_loss)
+        g_opt.step()
+        g_opt.zero_grad()
+
+        return {"generator_loss": g_loss, "critique_loss": c_loss}
+
+    def gradient_penalty(self, real_images, fake_images):
+        batch_size, c, h, w = real_images.size()
+        epsilon = torch.rand(batch_size, 1, 1, 1, device=self.device).expand_as(real_images)
+        interpolated = epsilon * real_images + (1 - epsilon) * fake_images
+        interpolated.requires_grad_(True)
+
+        interpolated_preds = self.critique(interpolated)
+
+        gradients = torch.autograd.grad(
+            outputs=interpolated_preds,
+            inputs=interpolated,
+            grad_outputs=torch.ones_like(interpolated_preds, device=self.device),
+            create_graph=True,
+            retain_graph=True,
+        )[0]
+
+        gradients = gradients.view(batch_size, -1)
+        gradient_norm = gradients.norm(2, dim=1)
+        gp = ((gradient_norm - 1) ** 2).mean()
+        return gp
 
     def validation_step(self, batch, batch_idx):
-        """
-        Args:
-            batch: Tuple (masked_image, mask, original_image)
-            batch_idx: Index of the current batch
-        Returns:
-            Dictionary containing validation losses and metrics
-        """
-        masked_image, original_image = batch
+        damaged_image, original_image = batch
+        inpainted_image = self(damaged_image)
 
-        # Generate inpainted regions
-        inpainted_image = self.generator(masked_image)
+        g_rec_loss = self.reconstruction_loss(inpainted_image, original_image)
+        self.log("val_loss", g_rec_loss, on_step=False, on_epoch=True, prog_bar=True)
 
-        # Combine inpainted regions with unmasked parts of the input
-        reconstructed_image = inpainted_image
-        # reconstructed_image = masked_image * mask + inpainted_image * (1 - mask)
-
-        # Compute losses
-        reconstruction_loss = nn.functional.l1_loss(reconstructed_image, original_image)  # L1 loss
-        fake_pred = self.discriminator(reconstructed_image)
-        adversarial_loss = nn.functional.binary_cross_entropy(fake_pred, torch.ones_like(fake_pred))
-
-        total_loss = reconstruction_loss + 0.01 * adversarial_loss  # Weighted loss combination
-
-        # Compute metrics (e.g., PSNR, SSIM)
-        psnr = self.compute_psnr(reconstructed_image, original_image)
-        ssim = self.compute_ssim(reconstructed_image, original_image)
-
-        # Log losses and metrics
-        self.log("val_reconstruction_loss", reconstruction_loss, prog_bar=True)
-        self.log("val_adversarial_loss", adversarial_loss, prog_bar=True)
-        self.log("val_total_loss", total_loss, prog_bar=True)
-        self.log("val_psnr", psnr, prog_bar=True)
-        self.log("val_ssim", ssim, prog_bar=True)
-
-        if batch_idx == 0:
-            grid = self._create_image_grid(masked_image, reconstructed_image, original_image)
+        # Log images every epoch
+        if batch_idx == 0:  # Log only for the first batch
+            grid = self._create_image_grid(damaged_image, inpainted_image, original_image)
             self.logger.experiment.log_image(grid, name=f"val_epoch_{self.current_epoch:04}.png")
 
-        return {"loss": total_loss, "psnr": psnr, "ssim": ssim}
-
-    @staticmethod
-    def compute_psnr(predicted, target, max_pixel_value=1.0):
-        """Computes Peak Signal-to-Noise Ratio (PSNR)."""
-        mse = nn.functional.mse_loss(predicted, target)
-        psnr = 20 * torch.log10(max_pixel_value / torch.sqrt(mse))
-        return psnr
-
-    @staticmethod
-    def compute_ssim(predicted, target):
-        """Computes Structural Similarity Index (SSIM)."""
-        import pytorch_msssim
-        ssim = pytorch_msssim.ssim(predicted, target, data_range=1.0)
-        return ssim
+        return g_rec_loss
 
     def test_step(self, batch, batch_idx):
-        """
-        Args:
-            batch: Tuple (masked_image, mask, original_image)
-            batch_idx: Index of the current batch
-        Returns:
-            Dictionary containing test losses and metrics
-        """
-        masked_image, original_image = batch
+        damaged_image, original_image = batch
+        inpainted_image = self(damaged_image)
 
-        # Generate inpainted regions
-        inpainted_image = self.generator(masked_image)
+        # grid = self._create_image_grid(damaged_image, inpainted_image, original_image)
+        # output_dir = "test_images"
+        # os.makedirs(output_dir, exist_ok=True)
+        # save_path = os.path.join(output_dir, f"test_batch_{batch_idx}.png")
+        # torchvision.utils.save_image(grid, save_path)
 
-        # Combine inpainted regions with unmasked parts
-        reconstructed_image = inpainted_image
-        # reconstructed_image = masked_image * mask + inpainted_image * (1 - mask)
+        # print(f'original_image:{original_image.shape} damaged_image:{damaged_image.shape} inpainted_image:{inpainted_image.shape}')
 
-        # Compute losses
-        reconstruction_loss = nn.functional.l1_loss(reconstructed_image, original_image)
-        fake_pred = self.discriminator(reconstructed_image)
-        adversarial_loss = nn.functional.binary_cross_entropy(fake_pred, torch.ones_like(fake_pred))
-
-        total_loss = reconstruction_loss + 0.01 * adversarial_loss
-
-        # Compute metrics (PSNR, SSIM)
-        psnr = self.compute_psnr(reconstructed_image, original_image)
-        ssim = self.compute_ssim(reconstructed_image, original_image)
-
+        self.log("test_loss", self.reconstruction_loss(inpainted_image, original_image))
         if batch_idx == 0:
-            grid = self._create_image_grid(masked_image, reconstructed_image, original_image)
+            grid = self._create_image_grid(damaged_image, inpainted_image, original_image)
             self.logger.experiment.log_image(grid, name=f"test.png")
 
-        # Log metrics
-        self.log("test_reconstruction_loss", reconstruction_loss)
-        self.log("test_adversarial_loss", adversarial_loss)
-        self.log("test_total_loss", total_loss)
-        self.log("test_psnr", psnr)
-        self.log("test_ssim", ssim)
-
-        return {"loss": total_loss, "psnr": psnr, "ssim": ssim}
-
+    def configure_optimizers(self):
+        g_opt = torch.optim.Adam(self.generator.parameters(), lr=self.lr, betas=(0.5, 0.999))
+        d_opt = torch.optim.Adam(self.critique.parameters(), lr=self.lr, betas=(0.5, 0.999))
+        return [g_opt, d_opt]
 
     def _create_image_grid(self, damaged_image, inpainted_image, original_image):
         """

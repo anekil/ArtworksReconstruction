@@ -15,16 +15,16 @@ class InpaintingDataset(torch.utils.data.Dataset):
     def apply_damage(self, image):
         img = np.array(image)
         height, width, _ = img.shape
-        mask = np.zeros((height, width), dtype=np.uint8)
+        mask = np.ones((height, width), dtype=np.uint8)
 
         mask_size = int(min(height, width) // 4)
         top_left_x = random.randint(0, width - mask_size)
         top_left_y = random.randint(0, height - mask_size)
 
-        mask[top_left_y:top_left_y + mask_size, top_left_x:top_left_x + mask_size] = 1
+        mask[top_left_y:top_left_y + mask_size, top_left_x:top_left_x + mask_size] = 0
         img[top_left_y:top_left_y + mask_size, top_left_x:top_left_x + mask_size] = [255, 255, 255]
 
-        return Image.fromarray(img), Image.fromarray(mask * 255)
+        return Image.fromarray(img), Image.fromarray(mask)
 
     def __getitem__(self, idx):
         row = self.df.iloc[idx]

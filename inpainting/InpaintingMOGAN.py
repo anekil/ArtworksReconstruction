@@ -18,15 +18,35 @@ class DepthwiseSeparableConv(nn.Module):
         x = self.activation(x)
         return x
 
-class ResizeConv(DepthwiseSeparableConv):
-    def __init__(self, in_channels, out_channels, kernel_size=3, padding=1, activation=True, scale=0.5):
-        super().__init__(in_channels, out_channels, kernel_size, padding, activation)
-        self.scale = nn.Upsample(scale_factor=scale, mode="bilinear", align_corners=True)
+
+class ResidualBlock(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.conv1 = DepthwiseSeparableConv(channels, channels, activation=True)
+        self.conv2 = DepthwiseSeparableConv(channels, channels, activation=False)
 
     def forward(self, x):
-        x = super().forward(x)
+        identity = x
+        x = self.conv1(x)
+        x = self.conv2(x)
+        return F.leaky_relu(x + identity)
+
+class ResizeConv(nn.Module):
+    def __init__(self, in_channels, out_channels, scale=1.):
+        super().__init__()
+        self.residual_block = ResidualBlock(in_channels)
+        if scale < 1:
+            self.scale = nn.Conv2d(in_channels, out_channels, 3, stride=2, padding=1)
+        elif scale > 1:
+            self.scale = nn.ConvTranspose2d(in_channels, out_channels, 3, stride=2, padding=1, output_padding=1)
+        else:
+            self.scale = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+        self.activation = nn.LeakyReLU(0.2)
+
+    def forward(self, x):
+        x = self.residual_block(x)
         x = self.scale(x)
-        return x
+        return self.activation(x)
 
 
 class PaintingBranch(nn.Module):
@@ -34,14 +54,12 @@ class PaintingBranch(nn.Module):
         super().__init__()
 
         self.first_layer = nn.Sequential(
-            nn.Conv2d(out_channels, out_channels, kernel_size=1),
-            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
+            ResizeConv(out_channels, out_channels, scale=2)
         )
         self.intermediate_layer = nn.Sequential(
-            nn.Conv2d(out_channels * 2, out_channels, kernel_size=1),
-            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
+            ResizeConv(out_channels * 2, out_channels, scale=2)
         )
-        self.last_layer = nn.Conv2d(out_channels * 2, out_channels, kernel_size=1)
+        self.last_layer = ResizeConv(out_channels * 2, out_channels, scale=1)
 
         self.to_rgb = nn.ModuleList([
             nn.Conv2d(feature, out_channels, kernel_size=1) for feature in features
@@ -76,15 +94,23 @@ class UNetGenerator(nn.Module):
 
         self.bottleneck = DepthwiseSeparableConv(features[-1], features[-1])
 
-        for feature in reversed(features):
+        features = features[::-1]
+        for feature in features:
             self.decoder.append(ResizeConv(in_channels + feature, feature, scale=2))
             in_channels = feature
 
         features.append(features[-1])
+        self.last_layer = nn.Sequential(
+            ResizeConv(in_channels, in_channels, scale=1),
+            ResizeConv(in_channels, out_channels, scale=1)
+        )
         self.painting_branch = PaintingBranch(reversed(features), out_channels)
 
     def forward(self, x):
         # Main Branch
+        mask = x[3, :, :]
+        damaged_img = x[:3, :, :]
+
         skip_connections = []
         for layer in self.encoder:
             x = layer(x)
@@ -103,31 +129,49 @@ class UNetGenerator(nn.Module):
             x = layer(x)
             painting_connections.append(x)
 
+
         x = self.painting_branch(painting_connections)
-        # print('Painting branch', x.shape)
-        x = torch.sigmoid(x)
-        # print("Input values range:", x.min(), x.max())
-        return x
+        # x = self.last_layer(x)
+        reconstructed_img = torch.sigmoid(x)
+
+        mask_3d = mask.expand_as(damaged_img)
+        final_img = mask_3d * damaged_img + (1 - mask_3d) * reconstructed_img
+
+        return final_img
 
 class Critique(nn.Module):
     def __init__(self, in_channels=3, features=None):
         super(Critique, self).__init__()
         if features is None:
-            features = [64, 128, 256]
+            features = [16, 32, 64, 128]
         layers = []
         for feature in features:
             layers.append(
                 nn.Sequential(
-                    nn.Conv2d(in_channels, feature, kernel_size=4, stride=2, padding=1),
+                    nn.Conv2d(in_channels, feature, kernel_size=5),
+                    nn.MaxPool2d(2, 2),
                     nn.LeakyReLU(0.2)
                 )
             )
             in_channels = feature
-        layers.append(nn.Conv2d(features[-1], 1, kernel_size=4, stride=1, padding=0))
-        self.model = nn.Sequential(*layers)
+        self.conv = nn.Sequential(*layers)
+        self.fc = nn.Sequential(
+            nn.Linear(128 * 16, 512),
+            nn.LeakyReLU(0.2),
+            nn.Linear(512, 256),
+            nn.LeakyReLU(0.2),
+            nn.Linear(256, 128),
+            nn.LeakyReLU(0.2),
+            nn.Linear(128, 64),
+            nn.LeakyReLU(0.2),
+            nn.Linear(64, 1)
+        )
 
     def forward(self, x):
-        return self.model(x)
+        x = self.conv(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+        return x
 
 class InpaintingMIGAN(pl.LightningModule):
     def __init__(self, lr=1e-4):
@@ -188,7 +232,7 @@ class InpaintingMIGAN(pl.LightningModule):
         g_rec_loss = self.reconstruction_loss(inpainted_image, original_image)
 
         # Total generator loss
-        g_loss = g_adv_loss + 100 * g_rec_loss
+        g_loss = g_adv_loss + 50 * g_rec_loss
         self.log("generator_loss", g_loss, on_step=True, on_epoch=True, prog_bar=True)
 
         # Backpropagation and optimization step for the generator

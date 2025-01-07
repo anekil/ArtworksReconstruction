@@ -1,7 +1,6 @@
 import numpy as np
 import torch
 import torch.nn as nn
-import timm
 import pytorch_lightning as pl
 import torchvision
 
@@ -66,25 +65,47 @@ class Generator(nn.Module):
         )
 
     def forward(self, x):
+        noise = torch.randn_like(x) * 0.1
+        x = x + noise
         x = self.encoder(x)
         x = self.bottleneck(x)
         x = self.decoder(x)
         return x
 
+
 class Critique(nn.Module):
-    def __init__(self):
+    def __init__(self, in_channels=3, features=None):
         super(Critique, self).__init__()
-        self.feature_extractor = timm.create_model("resnet18", pretrained=True, num_classes=0)
-        self.classifier = nn.Sequential(
+        if features is None:
+            features = [16, 32, 64, 128]
+        layers = []
+        for feature in features:
+            layers.append(
+                nn.Sequential(
+                    nn.Conv2d(in_channels, feature, kernel_size=5),
+                    nn.MaxPool2d(2, 2),
+                    nn.LeakyReLU(0.2)
+                )
+            )
+            in_channels = feature
+        self.conv = nn.Sequential(*layers)
+        self.fc = nn.Sequential(
+            nn.Linear(128 * 16, 512),
+            nn.LeakyReLU(0.2),
             nn.Linear(512, 256),
-            nn.ReLU(),
-            nn.Linear(256, 1),
+            nn.LeakyReLU(0.2),
+            nn.Linear(256, 128),
+            nn.LeakyReLU(0.2),
+            nn.Linear(128, 64),
+            nn.LeakyReLU(0.2),
+            nn.Linear(64, 1)
         )
 
     def forward(self, x):
-        features = self.feature_extractor(x)
-        validity = self.classifier(features)
-        return validity
+        x = self.conv(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+        return x
 
 class GANInpainting(pl.LightningModule):
     def __init__(self, generator, critique, lr=1e-4):
@@ -193,14 +214,6 @@ class GANInpainting(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         damaged_image, original_image = batch
         inpainted_image = self(damaged_image)
-
-        # grid = self._create_image_grid(damaged_image, inpainted_image, original_image)
-        # output_dir = "test_images"
-        # os.makedirs(output_dir, exist_ok=True)
-        # save_path = os.path.join(output_dir, f"test_batch_{batch_idx}.png")
-        # torchvision.utils.save_image(grid, save_path)
-
-        # print(f'original_image:{original_image.shape} damaged_image:{damaged_image.shape} inpainted_image:{inpainted_image.shape}')
 
         self.log("test_loss", self.reconstruction_loss(inpainted_image, original_image))
         if batch_idx == 0:

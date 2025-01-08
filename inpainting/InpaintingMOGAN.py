@@ -18,7 +18,6 @@ class DepthwiseSeparableConv(nn.Module):
         x = self.activation(x)
         return x
 
-
 # class ResidualBlock(nn.Module):
 #     def __init__(self, channels):
 #         super().__init__()

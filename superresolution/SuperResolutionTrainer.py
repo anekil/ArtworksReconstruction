@@ -50,24 +50,31 @@ class SuperResolutionTrainer:
 
                 # Decoder (larger than encoder with a cone-like structure)
                 self.decoder = nn.Sequential(
-                    nn.ConvTranspose2d(2048 // 6, 2048, kernel_size=3, stride=2, padding=1, output_padding=1),
+                    nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+                    nn.Conv2d(2048 // 6, 2048, kernel_size=3, padding=1),
                     nn.ReLU(inplace=True),
+
+                    nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
                     nn.Conv2d(2048, 1024, kernel_size=3, padding=1),
                     nn.ReLU(inplace=True),
 
-                    nn.ConvTranspose2d(1024, 512, kernel_size=3, stride=2, padding=1, output_padding=1),
+                    nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+                    nn.Conv2d(1024, 512, kernel_size=3, padding=1),
                     nn.ReLU(inplace=True),
+
+                    nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
                     nn.Conv2d(512, 256, kernel_size=3, padding=1),
                     nn.ReLU(inplace=True),
 
-                    nn.ConvTranspose2d(256, 128, kernel_size=3, stride=2, padding=1, output_padding=1),
+                    nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+                    nn.Conv2d(256, 128, kernel_size=3, padding=1),
                     nn.ReLU(inplace=True),
+
+                    nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
                     nn.Conv2d(128, 64, kernel_size=3, padding=1),
                     nn.ReLU(inplace=True),
 
-                    nn.ConvTranspose2d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1),
-                    nn.ReLU(inplace=True),
-                    nn.Conv2d(32, 3, kernel_size=3, padding=1),
+                    nn.Conv2d(64, 3, kernel_size=3, padding=1),
                     nn.Sigmoid()
                 )
             def forward(self, x):

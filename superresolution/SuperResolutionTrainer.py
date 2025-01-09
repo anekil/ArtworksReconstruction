@@ -20,39 +20,62 @@ class SuperResolutionTrainer:
         self.experiment = None
 
     def initialize_model(self):
-        class ResNet50ConicalAutoencoder(nn.Module):
+
+        class ResNet50Autoencoder(nn.Module):
             def __init__(self):
-                super(ResNet50ConicalAutoencoder, self).__init__()
+                super(ResNet50Autoencoder, self).__init__()
+
+                # Load pre-trained ResNet50
                 backbone = models.resnet50(pretrained=True)
+
+                # Modify the encoder to retain only 1/6th of the channels
                 self.encoder = nn.Sequential(
-                    backbone.conv1,
+                    nn.Conv2d(3, 16, kernel_size=7, stride=2, padding=3, bias=False),
                     backbone.bn1,
                     backbone.relu,
                     backbone.maxpool,
-                    backbone.layer1,
-                    backbone.layer2,
-                    backbone.layer3,
-                    backbone.layer4,
-                )
-                self.decoder = nn.Sequential(
-                    nn.ConvTranspose2d(2048, 1024, kernel_size=3, stride=2, padding=1, output_padding=1),
+                    nn.Conv2d(64, 128 // 6, kernel_size=1),
+                    nn.BatchNorm2d(128 // 6),
                     nn.ReLU(inplace=True),
+                    nn.Conv2d(256, 512 // 6, kernel_size=1),
+                    nn.BatchNorm2d(512 // 6),
+                    nn.ReLU(inplace=True),
+                    nn.Conv2d(512, 1024 // 6, kernel_size=1),
+                    nn.BatchNorm2d(1024 // 6),
+                    nn.ReLU(inplace=True),
+                    nn.Conv2d(1024, 2048 // 6, kernel_size=1),
+                    nn.BatchNorm2d(2048 // 6),
+                    nn.ReLU(inplace=True),
+                )
+
+                # Decoder (larger than encoder with a cone-like structure)
+                self.decoder = nn.Sequential(
+                    nn.ConvTranspose2d(2048 // 6, 2048, kernel_size=3, stride=2, padding=1, output_padding=1),
+                    nn.ReLU(inplace=True),
+                    nn.Conv2d(2048, 1024, kernel_size=3, padding=1),
+                    nn.ReLU(inplace=True),
+
                     nn.ConvTranspose2d(1024, 512, kernel_size=3, stride=2, padding=1, output_padding=1),
                     nn.ReLU(inplace=True),
-                    nn.ConvTranspose2d(512, 256, kernel_size=3, stride=2, padding=1, output_padding=1),
+                    nn.Conv2d(512, 256, kernel_size=3, padding=1),
                     nn.ReLU(inplace=True),
+
                     nn.ConvTranspose2d(256, 128, kernel_size=3, stride=2, padding=1, output_padding=1),
                     nn.ReLU(inplace=True),
-                    nn.ConvTranspose2d(128, 64, kernel_size=3, stride=2, padding=1, output_padding=1),
+                    nn.Conv2d(128, 64, kernel_size=3, padding=1),
                     nn.ReLU(inplace=True),
-                    nn.Conv2d(64, 3, kernel_size=3, stride=1, padding=1),
+
+                    nn.ConvTranspose2d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1),
+                    nn.ReLU(inplace=True),
+                    nn.Conv2d(32, 3, kernel_size=3, padding=1),
                     nn.Sigmoid()
                 )
             def forward(self, x):
                 x = self.encoder(x)
                 x = self.decoder(x)
                 return x
-        model = ResNet50ConicalAutoencoder()
+
+        model = ResNet50Autoencoder()
         return model.to(self.device)
 
     def create_dataloaders(self, batch_size):

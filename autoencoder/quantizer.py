@@ -8,69 +8,56 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class VectorQuantizer(nn.Module):
-    """
-    Discretization bottleneck part of the VQ-VAE.
+    def __init__(self, dim, n_embed, decay=0.99, eps=1e-5):
+        super().__init__()
 
-    Inputs:
-    - n_e : number of embeddings
-    - e_dim : dimension of embedding
-    - beta : commitment cost used in loss term, beta * ||z_e(x)-sg[e]||^2
-    """
+        self.dim = dim
+        self.n_embed = n_embed
+        self.decay = decay
+        self.eps = eps
 
-    def __init__(self, n_e, e_dim, beta):
-        super(VectorQuantizer, self).__init__()
-        self.n_e = n_e
-        self.e_dim = e_dim
-        self.beta = beta
+        embed = torch.randn(dim, n_embed)
+        self.register_buffer("embed", embed)
+        self.register_buffer("cluster_size", torch.zeros(n_embed))
+        self.register_buffer("embed_avg", embed.clone())
 
-        self.embedding = nn.Embedding(self.n_e, self.e_dim)
-        self.embedding.weight.data.uniform_(-1.0 / self.n_e, 1.0 / self.n_e)
+    def forward(self, input):
+        flatten = input.reshape(-1, self.dim)
+        dist = (
+            flatten.pow(2).sum(1, keepdim=True)
+            - 2 * flatten @ self.embed
+            + self.embed.pow(2).sum(0, keepdim=True)
+        )
+        _, embed_ind = (-dist).max(1)
+        embed_onehot = F.one_hot(embed_ind, self.n_embed).type(flatten.dtype)
+        embed_ind = embed_ind.view(*input.shape[:-1])
+        quantize = self.embed_code(embed_ind)
 
-    def forward(self, z):
-        """
-        Inputs the output of the encoder network z and maps it to a discrete 
-        one-hot vector that is the index of the closest embedding vector e_j
+        if self.training:
+            embed_onehot_sum = embed_onehot.sum(0)
+            embed_sum = flatten.transpose(0, 1) @ embed_onehot
 
-        z (continuous) -> z_q (discrete)
+            self.cluster_size.data.mul_(self.decay).add_(
+                embed_onehot_sum, alpha=1 - self.decay
+            )
+            self.embed_avg.data.mul_(self.decay).add_(embed_sum, alpha=1 - self.decay)
+            n = self.cluster_size.sum()
+            cluster_size = (
+                (self.cluster_size + self.eps) / (n + self.n_embed * self.eps) * n
+            )
+            embed_normalized = self.embed_avg / cluster_size.unsqueeze(0)
+            self.embed.data.copy_(embed_normalized)
 
-        z.shape = (batch, channel, height, width)
+        diff = (quantize.detach() - input).pow(2).mean()
+        quantize = input + (quantize - input).detach()
 
-        quantization pipeline:
+        return quantize, diff, embed_ind
 
-            1. get encoder input (B,C,H,W)
-            2. flatten input to (B*H*W,C)
+    def embed_code(self, embed_id):
+        return F.embedding(embed_id, self.embed.transpose(0, 1))
 
-        """
-        # reshape z -> (batch, height, width, channel) and flatten
-        z = z.permute(0, 2, 3, 1).contiguous()
-        z_flattened = z.view(-1, self.e_dim)
-        # distances from z to embeddings e_j (z - e)^2 = z^2 + e^2 - 2 e * z
 
-        d = torch.sum(z_flattened ** 2, dim=1, keepdim=True) + \
-            torch.sum(self.embedding.weight**2, dim=1) - 2 * \
-            torch.matmul(z_flattened, self.embedding.weight.t())
 
-        # find closest encodings
-        min_encoding_indices = torch.argmin(d, dim=1).unsqueeze(1)
-        min_encodings = torch.zeros(
-            min_encoding_indices.shape[0], self.n_e).to(device)
-        min_encodings.scatter_(1, min_encoding_indices, 1)
-
-        # get quantized latent vectors
-        z_q = torch.matmul(min_encodings, self.embedding.weight).view(z.shape)
-
-        # compute loss for embedding
-        loss = torch.mean((z_q.detach()-z)**2) + self.beta * \
-            torch.mean((z_q - z.detach()) ** 2)
-
-        # preserve gradients
-        z_q = z + (z_q - z).detach()
-
-        # perplexity
-        e_mean = torch.mean(min_encodings, dim=0)
-        perplexity = torch.exp(-torch.sum(e_mean * torch.log(e_mean + 1e-10)))
-
-        # reshape back to match original input shape
-        z_q = z_q.permute(0, 3, 1, 2).contiguous()
-
-        return loss, z_q, perplexity, min_encodings, min_encoding_indices
+if __name__ == "__main__":
+    from torchinfo import summary
+    summary(VectorQuantizer(8, 512), input_size=(4, 16, 16, 8))

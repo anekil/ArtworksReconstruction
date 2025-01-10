@@ -88,7 +88,7 @@ class AutoencoderTrainer:
         def denormalize(images):
             return images * std + mean
         
-        num_images = min(5, original_images.size(0))
+        num_images = min(10, original_images.size(0))
         indices = torch.randperm(original_images.size(0))[:num_images]
         
         for idx in range(num_images):
@@ -111,11 +111,12 @@ class AutoencoderTrainer:
                 step=epoch
             )
 
-    def train_epoch(self, model, train_loader, criterion, optimizer, experiment):
+    def train_epoch(self, model, train_loader, criterion, optimizer, latent_loss = 1.):
         model.train()
         total_loss = 0
+        total_q_loss = 0
 
-        latent_loss_weight = 0.25
+        # latent_loss_weight = 0.25
     
         for batch_idx, (data, _) in enumerate(train_loader):
             optimizer.zero_grad()
@@ -125,20 +126,20 @@ class AutoencoderTrainer:
             output, latent_loss, _ = model(data)
             recon_loss = criterion(output, data)
             latent_loss = latent_loss.mean()
-            loss = recon_loss + latent_loss_weight * latent_loss
+            loss = recon_loss + latent_loss * latent_loss
 
             loss.backward()
             optimizer.step()
 
-            total_loss += loss.item()
+            total_loss += recon_loss.item()
+            total_q_loss += latent_loss.item()
             
-        return total_loss / len(train_loader)
+        return total_loss / len(train_loader), total_q_loss / len(train_loader)
 
     def validate(self, model, val_loader, criterion):
         model.eval()
         total_loss = 0
-
-        latent_loss_weight = 0.25
+        total_q_loss = 0
 
         with torch.no_grad():
             for data, _ in val_loader:
@@ -146,76 +147,22 @@ class AutoencoderTrainer:
                 output, latent_loss, _ = model(data)
                 recon_loss = criterion(output, data)
                 latent_loss = latent_loss.mean()
-                loss = recon_loss + latent_loss_weight * latent_loss
+                # loss = recon_loss + latent_loss
 
-                total_loss += loss.item()
+                total_loss += recon_loss.item()
+                total_q_loss += latent_loss.item()
 
-        return total_loss / len(val_loader)
+        return total_loss / len(val_loader), total_q_loss / len(val_loader)
 
     def objective(self, trial):
-        experiment = comet_ml.Experiment(
-            api_key=self.config["comet_api_key"],
-            project_name=self.config["project_name"]
-        )
-
-        experiment.log_code(folder="autoencoder")
-
         hyperparameters = {
             "learning_rate": trial.suggest_float("learning_rate", 1e-5, 1e-2, log=True),
-            "batch_size": trial.suggest_categorical("batch_size", [16, 32, 64, 128]),
-            "weight_decay": trial.suggest_float("weight_decay", 1e-7, 1e-3, log=True)
+            "batch_size": trial.suggest_categorical("batch_size", [32, 64]),
+            "weight_decay": trial.suggest_float("weight_decay", 1e-7, 1e-3, log=True),
+            "latent_loss": trial.suggest_float("latent_loss", 0.1, 1.0)
         }
-        experiment.log_parameters(hyperparameters)
-
-        model = self.model_class().to(self.device)
-
-        train_loader, val_loader = self.create_dataloaders(hyperparameters["batch_size"])
         
-        criterion = nn.MSELoss()
-
-        optimizer = optim.Adam(
-            model.parameters(),
-            lr=hyperparameters["learning_rate"],
-            weight_decay=hyperparameters["weight_decay"]
-        )
-        
-        best_val_loss = float('inf')
-        patience = self.config["patience"]
-        patience_counter = 0
-        
-        for epoch in range(self.config["max_epochs"]):
-            train_loss = self.train_epoch(model, train_loader, criterion, optimizer, experiment)
-            val_loss = self.validate(model, val_loader, criterion)
-
-            experiment.log_metric("train_loss", train_loss, step=epoch)
-            experiment.log_metric("val_loss", val_loss, step=epoch)
-
-            with experiment.test() as test, torch.no_grad() as nograd:
-                for data, _ in val_loader:
-                    data = data.to(self.device)
-                    out_data, _, _ = model(data)
-                    self.log_images(experiment, data, out_data, epoch)
-                    break
-
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                patience_counter = 0
-
-                torch.save(model.state_dict(), f"{self.config['model_save_path']}/best_model.pth")
-            else:
-                patience_counter += 1
-                
-            if patience_counter >= patience:
-                self.logger.info(f"Early stopping triggered at epoch {epoch}")
-                break
-
-            self.logger.info(f"Epoch {epoch}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}")
-
-        log_model(experiment, model, model_name="AutoEncoder")
-        experiment.log_metric("best_val_loss", best_val_loss)
-        experiment.end()
-
-        return best_val_loss
+        return self.run(hyperparameters)
 
     def run(self, hyperparameters):
         experiment = comet_ml.Experiment(
@@ -226,12 +173,8 @@ class AutoencoderTrainer:
         experiment.log_parameters(hyperparameters)
 
         model = self.model_class().to(self.device)
-
         train_loader, val_loader = self.create_dataloaders(hyperparameters["batch_size"])
-
         criterion = nn.MSELoss()
-
-        # model.load_state_dict(torch.load(f"{self.config['model_save_path']}/best_model.pth", weights_only=True))
 
         optimizer = optim.Adam(
             model.parameters(),
@@ -242,15 +185,17 @@ class AutoencoderTrainer:
         best_val_loss = float('inf')
         patience = self.config["patience"]
         patience_counter = 0
+        latent_loss = hyperparameters["latent_loss"]
 
         try:
-            
             for epoch in range(self.config["max_epochs"]):
-                train_loss = self.train_epoch(model, train_loader, criterion, optimizer, experiment)
-                val_loss = self.validate(model, val_loader, criterion)
+                train_loss, train_q_loss = self.train_epoch(model, train_loader, criterion, optimizer, latent_loss)
+                val_loss, val_q_loss = self.validate(model, val_loader, criterion)
 
                 experiment.log_metric("train_loss", train_loss, step=epoch)
                 experiment.log_metric("val_loss", val_loss, step=epoch)
+                experiment.log_metric("train_q_loss", train_q_loss, step=epoch)
+                experiment.log_metric("val_q_loss", val_q_loss, step=epoch)
 
                 with experiment.test() as test, torch.no_grad() as nograd:
                     for data, _ in val_loader:
@@ -262,7 +207,6 @@ class AutoencoderTrainer:
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
                     patience_counter = 0
-
                     torch.save(model.state_dict(), f"{self.config['model_save_path']}/best_model.pth")
                 else:
                     patience_counter += 1
@@ -291,8 +235,7 @@ class AutoencoderTrainer:
         
         study.optimize(
             self.objective,
-            n_trials=self.config["n_trials"],
-            timeout=self.config["timeout"],
+            n_trials=self.config["n_trials"]
         )
         
         return study.best_trial
@@ -300,9 +243,9 @@ class AutoencoderTrainer:
 config = {
     "project_name": "autoencoder",
     "model_save_path": "./autoencoder/models/",
-    "max_epochs": 250,
-    "patience": 40,
-    "n_trials": 50,
+    "max_epochs": 150,
+    "patience": 15,
+    "n_trials": 20,
     "timeout": 72000
 }
 
@@ -315,8 +258,9 @@ if __name__ == "__main__":
 
     hyperparameters = {
         "learning_rate": 3e-4,
-        "batch_size": 64,
-        "weight_decay": 0
+        "batch_size": 32,
+        "weight_decay": 0,
+        "latent_loss": 0.25
     }
 
     hf_dataset = load_dataset("Artificio/WikiArt_Full", split="train")
@@ -324,5 +268,6 @@ if __name__ == "__main__":
     dataset = ImageDataset(hf_dataset, transform)
     
     trainer = AutoencoderTrainer(VQVAE, dataset, config)
+    # best_trial = trainer.optimize()
     best_trial = trainer.run(hyperparameters)
     print("Trial loss:", best_trial)

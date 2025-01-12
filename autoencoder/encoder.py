@@ -16,6 +16,7 @@ class Encoder(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(128, 196, kernel_size=4, stride=2, padding=1),
             nn.ReLU(inplace=True),
+            nn.Conv2d(196, 196, kernel_size=3, padding=1),
             nn.Conv2d(196, 2, kernel_size=1),
         )
 

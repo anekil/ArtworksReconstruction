@@ -9,19 +9,20 @@ class Decoder(nn.Module):
     def __init__(self):
         super(Decoder, self).__init__()
         self.model = nn.Sequential(
-            nn.Conv2d(2, 256, kernel_size=3, stride=1, padding=1),
-            ResBlock(256, 128),
-            ResBlock(256, 128),
+            nn.Conv2d(2, 192, kernel_size=3, stride=1, padding=1),
+            ResBlock(192, 128),
+            ResBlock(192, 128),
 
             nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(256, 256, kernel_size=4, stride=2, padding=1),
+            nn.ConvTranspose2d(192, 192, kernel_size=4, stride=2, padding=1),
             nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1),
+            nn.ConvTranspose2d(192, 128, kernel_size=4, stride=2, padding=1),
             nn.ReLU(inplace=True),
             nn.ConvTranspose2d(128, 128, kernel_size=4, stride=2, padding=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(128, 128, kernel_size=3, padding=1),
-            nn.Conv2d(128, 3, kernel_size=1),
+            nn.Conv2d(128, 64, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 3, kernel_size=1),
             # nn.Sigmoid(),
         )
 

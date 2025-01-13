@@ -25,107 +25,52 @@ class SuperResolutionTrainer:
             def __init__(self):
                 super(ResNet50Autoencoder, self).__init__()
 
-                # Load pre-trained ResNet50
                 backbone = models.resnet50(pretrained=True)
 
-
-                # Encoder
                 self.encoder = nn.Sequential(
-                    backbone.conv1,  # Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
-                    backbone.bn1,  # BatchNorm2d(64)
-                    backbone.relu,  # ReLU activation
-                    backbone.maxpool,  # MaxPooling layer
-                    backbone.layer1,  # ResNet block 1
-                    backbone.layer2,  # ResNet block 2
-                    backbone.layer3,  # ResNet block 3
-                    backbone.layer4  # ResNet block 4
+                    nn.Conv2d(3, 64, kernel_size=3, padding=1),  # (224, 224, 3) -> (224, 224, 64)
+                    nn.ReLU(inplace=True),
+                    nn.Conv2d(64, 64, kernel_size=3, padding=1),  # (224, 224, 64) -> (224, 224, 64)
+                    nn.ReLU(inplace=True),
+                    nn.MaxPool2d(kernel_size=2, stride=2, padding=0),  # (224, 224, 64) -> (112, 112, 64)
+                    nn.Dropout(0.3),
+
+                    nn.Conv2d(64, 128, kernel_size=3, padding=1),  # (112, 112, 64) -> (112, 112, 128)
+                    nn.ReLU(inplace=True),
+                    nn.Conv2d(128, 128, kernel_size=3, padding=1),  # (112, 112, 128) -> (112, 112, 128)
+                    nn.ReLU(inplace=True),
+                    nn.MaxPool2d(kernel_size=2, stride=2, padding=0),  # (112, 112, 128) -> (56, 56, 128)
+
+                    nn.Conv2d(128, 256, kernel_size=3, padding=1),  # (56, 56, 128) -> (56, 56, 256)
+                    nn.ReLU(inplace=True)
                 )
 
-                # Decoder (Upsampling path)
+                # Decoder
                 self.decoder = nn.Sequential(
-                    # Stage 1: From latent space (2048 channels) to 1024
-                    nn.ConvTranspose2d(2048, 2048, kernel_size=3, stride=2, padding=1, output_padding=1),
-                    # Output: 7x7 → 14x14
-                    nn.BatchNorm2d(2048),
+                    nn.Conv2d(256, 128, kernel_size=3, padding=1),  # (56, 56, 256) -> (56, 56, 128)
                     nn.ReLU(inplace=True),
-
-                    nn.Conv2d(2048, 2048, kernel_size=3, padding=1),  # Output: 14x14 → 14x14
-                    nn.BatchNorm2d(2048),
+                    nn.Conv2d(128, 128, kernel_size=3, padding=1),  # (56, 56, 128) -> (56, 56, 128)
                     nn.ReLU(inplace=True),
+                    nn.Upsample(scale_factor=2, mode='nearest'),  # (56, 56, 128) -> (112, 112, 128)
 
-                    nn.Conv2d(2048, 1024, kernel_size=3, padding=1),  # Output: 14x14 → 14x14
-                    nn.BatchNorm2d(1024),
+                    nn.Conv2d(128, 64, kernel_size=3, padding=1),  # (112, 112, 128) -> (112, 112, 64)
                     nn.ReLU(inplace=True),
-
-                    # Stage 2: From 1024 to 512
-                    nn.ConvTranspose2d(1024, 1024, kernel_size=3, stride=2, padding=1, output_padding=1),
-                    # Output: 14x14 → 28x28
-                    nn.BatchNorm2d(1024),
+                    nn.Conv2d(64, 64, kernel_size=3, padding=1),  # (112, 112, 64) -> (112, 112, 64)
                     nn.ReLU(inplace=True),
+                    nn.Upsample(scale_factor=2, mode='nearest'),  # (112, 112, 64) -> (224, 224, 64)
 
-                    nn.Conv2d(1024, 1024, kernel_size=3, padding=1),  # Output: 28x28 → 28x28
-                    nn.BatchNorm2d(1024),
-                    nn.ReLU(inplace=True),
-
-                    nn.Conv2d(1024, 512, kernel_size=3, padding=1),  # Output: 28x28 → 28x28
-                    nn.BatchNorm2d(512),
-                    nn.ReLU(inplace=True),
-
-                    # Stage 3: From 512 to 256
-                    nn.ConvTranspose2d(512, 512, kernel_size=3, stride=2, padding=1, output_padding=1),
-                    # Output: 28x28 → 56x56
-                    nn.BatchNorm2d(512),
-                    nn.ReLU(inplace=True),
-
-                    nn.Conv2d(512, 512, kernel_size=3, padding=1),  # Output: 56x56 → 56x56
-                    nn.BatchNorm2d(512),
-                    nn.ReLU(inplace=True),
-
-                    nn.Conv2d(512, 256, kernel_size=3, padding=1),  # Output: 56x56 → 56x56
-                    nn.BatchNorm2d(256),
-                    nn.ReLU(inplace=True),
-
-                    # Stage 4: From 256 to 128
-                    nn.ConvTranspose2d(256, 256, kernel_size=3, stride=2, padding=1, output_padding=1),
-                    # Output: 56x56 → 112x112
-                    nn.BatchNorm2d(256),
-                    nn.ReLU(inplace=True),
-
-                    nn.Conv2d(256, 256, kernel_size=3, padding=1),  # Output: 112x112 → 112x112
-                    nn.BatchNorm2d(256),
-                    nn.ReLU(inplace=True),
-
-                    nn.Conv2d(256, 128, kernel_size=3, padding=1),  # Output: 112x112 → 112x112
-                    nn.BatchNorm2d(128),
-                    nn.ReLU(inplace=True),
-
-                    # Stage 5: From 128 to 64
-                    nn.ConvTranspose2d(128, 128, kernel_size=3, stride=2, padding=1, output_padding=1),
-                    # Output: 112x112 → 224x224
-                    nn.BatchNorm2d(128),
-                    nn.ReLU(inplace=True),
-
-                    nn.Conv2d(128, 128, kernel_size=3, padding=1),  # Output: 224x224 → 224x224
-                    nn.BatchNorm2d(128),
-                    nn.ReLU(inplace=True),
-
-                    nn.Conv2d(128, 64, kernel_size=3, padding=1),  # Output: 224x224 → 224x224
-                    nn.BatchNorm2d(64),
-                    nn.ReLU(inplace=True),
-
-                    # Final Output Layer
-                    nn.Conv2d(64, 3, kernel_size=3, padding=1),  # Output: 224x224 → 224x224
-                    nn.Sigmoid()  # Output normalized to [0, 1]
+                    nn.Conv2d(64, 3, kernel_size=3, padding=1),  # (224, 224, 64) -> (224, 224, 3)
+                    nn.ReLU(inplace=True)
                 )
 
             def forward(self, x):
-                x = self.encoder(x)
-                x = self.decoder(x)
-                return x
-
-
+                    x = self.encoder(x)
+                    x = self.decoder(x)
+                    return x
 
         model = ResNet50Autoencoder()
+        self.experiment.set_model_graph(str(model))
+
         return model.to(self.device)
 
     def create_dataloaders(self, batch_size):
@@ -247,4 +192,9 @@ class SuperResolutionTrainer:
             combined = np.hstack([lri_np, ri_np, hri_np]) * 255
             combined = combined.astype(np.uint8)
             experiment.log_image(combined, name=f"superres_epoch_{epoch}_idx_{idx}", step=epoch)
+            input_res = f"Input: {lri_np.shape[0]}x{lri_np.shape[1]}"
+            output_res = f"Output: {ri_np.shape[0]}x{ri_np.shape[1]}"
+            target_res = f"Target: {hri_np.shape[0]}x{hri_np.shape[1]}"
+            experiment.log_text(f"{input_res}, {output_res}, {target_res}", step=epoch)
+
         print(f"Logged {num_images} images for Epoch {epoch}")

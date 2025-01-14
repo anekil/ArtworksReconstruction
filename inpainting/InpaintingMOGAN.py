@@ -19,18 +19,6 @@ class DepthwiseSeparableConv(nn.Module):
         x = self.activation(x)
         return x
 
-# class ResidualBlock(nn.Module):
-#     def __init__(self, channels):
-#         super().__init__()
-#         self.conv1 = DepthwiseSeparableConv(channels, channels, activation=True)
-#         self.conv2 = DepthwiseSeparableConv(channels, channels, activation=False)
-#
-#     def forward(self, x):
-#         identity = x
-#         x = self.conv1(x)
-#         x = self.conv2(x)
-#         return F.leaky_relu(x + identity)
-
 class ResizeConv(DepthwiseSeparableConv):
     def __init__(self, in_channels, out_channels, kernel_size=3, padding=1, activation=True, scale=0.5):
         super().__init__(in_channels, out_channels, kernel_size, padding, activation)
@@ -67,6 +55,7 @@ class PaintingBranch(nn.Module):
             else:
                 x = torch.cat((x, skip), dim=1)
                 x = self.intermediate_layer(x)
+                x = F.leaky_relu(x, 0.2)
         last_skip = self.to_rgb[-1](skip_connections[-1])
         x = torch.cat((x, last_skip), dim=1)
         x = self.last_layer(x)
@@ -77,7 +66,7 @@ class UNetGenerator(nn.Module):
     def __init__(self, in_channels=4, out_channels=3, features=None):
         super().__init__()
         if features is None:
-            features = [64, 128, 256, 512] # [128, 256, 256, 512, 512]
+            features = [64, 128, 256, 512]
         self.encoder = nn.ModuleList()
         self.decoder = nn.ModuleList()
 
@@ -97,40 +86,37 @@ class UNetGenerator(nn.Module):
             ResizeConv(in_channels, in_channels, scale=1),
             ResizeConv(in_channels, out_channels, scale=1)
         )
-        print(features)
         self.painting_branch = PaintingBranch(features, out_channels)
 
     def forward(self, x):
-        # Main Branch
         skip_connections = []
         for layer in self.encoder:
             x = layer(x)
             skip_connections.append(x)
 
-        # Bottleneck
         painting_connections = []
         x = self.bottleneck(x)
         painting_connections.append(x)
 
         skip_connections = skip_connections[::-1]
 
-        # Decoder
         for layer, skip in zip(self.decoder, skip_connections):
             x = torch.cat((x, skip), dim=1)
             x = layer(x)
             painting_connections.append(x)
 
-
         x = self.painting_branch(painting_connections)
-        # x = self.last_layer(x)
         return torch.sigmoid(x)
 
 class Critique(nn.Module):
     def __init__(self):
         super(Critique, self).__init__()
-        self.feature_extractor = timm.create_model("resnet18", pretrained=True, num_classes=0)
+        self.feature_extractor = timm.create_model("efficientnet_b0", pretrained=True, num_classes=0)
+        self.feature_extractor = nn.Sequential(*list(self.feature_extractor.children())[:6])
+        for param in self.feature_extractor.parameters():
+            param.requires_grad = False
         self.classifier = nn.Sequential(
-            nn.Linear(512, 256),
+            nn.Linear(1280, 256),
             nn.ReLU(),
             nn.Linear(256, 1),
         )
@@ -151,7 +137,6 @@ class InpaintingMIGAN(pl.LightningModule):
         self.n_critic = 5
         self.lambda_gp = 10.0
 
-        self.adversarial_loss = None
         self.reconstruction_loss = nn.L1Loss()
         self.automatic_optimization = False
 
@@ -162,47 +147,33 @@ class InpaintingMIGAN(pl.LightningModule):
         g_opt, c_opt = self.optimizers()
         damaged_image, original_image = batch
 
-        # -----------------------
-        # Train Critique
-        # -----------------------
+        mask = damaged_image[:, 3:4, :, :]
+        damaged_img = damaged_image[:, :3, :, :]
+
         for _ in range(self.n_critic):
-            # Real images
             real_preds = self.critique(original_image)
             fake_images = self(damaged_image).detach()
             fake_preds = self.critique(fake_images)
 
-            # Wasserstein loss for critique
             c_loss = -(real_preds.mean() - fake_preds.mean())
-
-            # Gradient penalty (WGAN-GP)
             gp = self.gradient_penalty(original_image, fake_images)
             c_loss += self.lambda_gp * gp
 
             self.log("critique_loss", c_loss, on_step=True, on_epoch=True, prog_bar=True)
 
-            # Backpropagation and optimization step for the critique
             self.manual_backward(c_loss)
             c_opt.step()
             c_opt.zero_grad()
 
-        # -----------------------
-        # Train Generator
-        # -----------------------
-        # Generate inpainted images
         inpainted_image = self(damaged_image)
 
-        # Adversarial loss (fool the critique)
         fake_preds = self.critique(inpainted_image)
-        g_adv_loss = -fake_preds.mean()  # Minimize negative mean of fake_preds
+        g_adv_loss = -fake_preds.mean()
+        g_rec_loss = self.reconstruction_loss(inpainted_image * mask, original_image * mask)
 
-        # Reconstruction loss (difference with original image)
-        g_rec_loss = self.reconstruction_loss(inpainted_image, original_image)
-
-        # Total generator loss
         g_loss = g_adv_loss + 50 * g_rec_loss
         self.log("generator_loss", g_loss, on_step=True, on_epoch=True, prog_bar=True)
 
-        # Backpropagation and optimization step for the generator
         self.manual_backward(g_loss)
         g_opt.step()
         g_opt.zero_grad()
@@ -233,12 +204,12 @@ class InpaintingMIGAN(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         damaged_image, original_image = batch
         inpainted_image = self(damaged_image)
+        mask = damaged_image[:, :3, :, :]
 
-        g_rec_loss = self.reconstruction_loss(inpainted_image, original_image)
+        g_rec_loss = self.reconstruction_loss(inpainted_image * mask, original_image * mask)
         self.log("val_loss", g_rec_loss, on_step=False, on_epoch=True, prog_bar=True)
 
-        # Log images every epoch
-        if batch_idx == 0:  # Log only for the first batch
+        if batch_idx == 0:
             grid = self._create_image_grid(damaged_image, inpainted_image, original_image)
             self.logger.experiment.log_image(grid, name=f"val_epoch_{self.current_epoch:04}.png")
 
@@ -266,19 +237,18 @@ class InpaintingMIGAN(pl.LightningModule):
         return [g_opt, d_opt]
 
     def _create_image_grid(self, damaged_image, inpainted_image, original_image):
-        """
-        Create a grid of images for visualization:
-        Row 1: Damaged images
-        Row 2: Inpainted images
-        Row 3: Original images
-        """
-        # Denormalize images for visualization
-        damaged_image = damaged_image[:,: 3, :, :].cpu()
-        inpainted_image = inpainted_image[:,: 3, :, :].cpu()
-        original_image = original_image[:,: 3, :, :].cpu()
+        damaged_image = damaged_image.cpu()
+        inpainted_image = inpainted_image.cpu()
+        original_image = original_image.cpu()
+        mask = damaged_image[:, 3, :, :]
+        damaged_image = damaged_image[:, :3, :, :]
+
+        mask = mask.unsqueeze(1)
+        mask_3d = mask.expand_as(damaged_image)
+        reconstructed_image = mask_3d * damaged_image + (1 - mask_3d) * inpainted_image
 
         grid = torchvision.utils.make_grid(
-            torch.cat([damaged_image, inpainted_image, original_image], dim=0),
+            torch.cat([damaged_image, inpainted_image, reconstructed_image, original_image], dim=0),
             nrow=damaged_image.size(0),
         )
 

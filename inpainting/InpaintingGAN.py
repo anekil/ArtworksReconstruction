@@ -25,7 +25,7 @@ class Generator(nn.Module):
     def __init__(self):
         super(Generator, self).__init__()
         self.encoder = nn.Sequential(
-            nn.Conv2d(4, 64, kernel_size=3, stride=1, padding=1, bias=False),  # Match 4 input channels
+            nn.Conv2d(4, 64, kernel_size=3, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
 
@@ -48,11 +48,11 @@ class Generator(nn.Module):
         )
 
         self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(512, 256, kernel_size=3, stride=1, padding=1, bias=False),  # Keep dimensions
+            nn.ConvTranspose2d(512, 256, kernel_size=3, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
 
-            nn.ConvTranspose2d(256, 128, kernel_size=3, stride=1, padding=1, bias=False),  # Keep dimensions
+            nn.ConvTranspose2d(256, 128, kernel_size=3, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
 
@@ -65,8 +65,6 @@ class Generator(nn.Module):
         )
 
     def forward(self, x):
-        noise = torch.randn_like(x) * 0.1
-        x = x + noise
         x = self.encoder(x)
         x = self.bottleneck(x)
         x = self.decoder(x)
@@ -74,46 +72,30 @@ class Generator(nn.Module):
 
 
 class Critique(nn.Module):
-    def __init__(self, in_channels=3, features=None):
+    def __init__(self):
         super(Critique, self).__init__()
-        if features is None:
-            features = [16, 32, 64, 128]
-        layers = []
-        for feature in features:
-            layers.append(
-                nn.Sequential(
-                    nn.Conv2d(in_channels, feature, kernel_size=5),
-                    nn.MaxPool2d(2, 2),
-                    nn.LeakyReLU(0.2)
-                )
-            )
-            in_channels = feature
-        self.conv = nn.Sequential(*layers)
-        self.fc = nn.Sequential(
-            nn.Linear(128 * 16, 512),
-            nn.LeakyReLU(0.2),
-            nn.Linear(512, 256),
-            nn.LeakyReLU(0.2),
-            nn.Linear(256, 128),
-            nn.LeakyReLU(0.2),
-            nn.Linear(128, 64),
-            nn.LeakyReLU(0.2),
-            nn.Linear(64, 1)
+        self.feature_extractor = torchvision.models.squeezenet1_1(weights='DEFAULT')
+        for param in self.feature_extractor.parameters():
+            param.requires_grad = False
+        self.classifier = nn.Sequential(
+            nn.Linear(1000, 16),
+            nn.ReLU(),
+            nn.Linear(16, 1),
         )
 
     def forward(self, x):
-        x = self.conv(x)
+        x = self.feature_extractor(x)
         x = torch.flatten(x, 1)
-        x = self.fc(x)
+        x = self.classifier(x)
         return x
 
 class GANInpainting(pl.LightningModule):
-    def __init__(self, generator, critique, lr=1e-4):
+    def __init__(self, lr=1e-4):
         super(GANInpainting, self).__init__()
         self.save_hyperparameters()
 
-        self.generator = generator
-        self.critique = critique
+        self.generator = Generator()
+        self.critique = Critique()
         self.lr = lr
         self.n_critic = 5
         self.lambda_gp = 10.0
@@ -133,21 +115,17 @@ class GANInpainting(pl.LightningModule):
         # Train Critique
         # -----------------------
         for _ in range(self.n_critic):
-            # Real images
             real_preds = self.critique(original_image)
             fake_images = self(damaged_image).detach()
             fake_preds = self.critique(fake_images)
 
-            # Wasserstein loss for critique
             c_loss = -(real_preds.mean() - fake_preds.mean())
 
-            # Gradient penalty (WGAN-GP)
             gp = self.gradient_penalty(original_image, fake_images)
             c_loss += self.lambda_gp * gp
 
             self.log("critique_loss", c_loss, on_step=True, on_epoch=True, prog_bar=True)
 
-            # Backpropagation and optimization step for the critique
             self.manual_backward(c_loss)
             c_opt.step()
             c_opt.zero_grad()
@@ -155,21 +133,16 @@ class GANInpainting(pl.LightningModule):
         # -----------------------
         # Train Generator
         # -----------------------
-        # Generate inpainted images
         inpainted_image = self(damaged_image)
 
-        # Adversarial loss (fool the critique)
         fake_preds = self.critique(inpainted_image)
-        g_adv_loss = -fake_preds.mean()  # Minimize negative mean of fake_preds
+        g_adv_loss = -fake_preds.mean()
 
-        # Reconstruction loss (difference with original image)
         g_rec_loss = self.reconstruction_loss(inpainted_image, original_image)
 
-        # Total generator loss
         g_loss = g_adv_loss + 100 * g_rec_loss
         self.log("generator_loss", g_loss, on_step=True, on_epoch=True, prog_bar=True)
 
-        # Backpropagation and optimization step for the generator
         self.manual_backward(g_loss)
         g_opt.step()
         g_opt.zero_grad()
@@ -204,8 +177,7 @@ class GANInpainting(pl.LightningModule):
         g_rec_loss = self.reconstruction_loss(inpainted_image, original_image)
         self.log("val_loss", g_rec_loss, on_step=False, on_epoch=True, prog_bar=True)
 
-        # Log images every epoch
-        if batch_idx == 0:  # Log only for the first batch
+        if batch_idx == 0:
             grid = self._create_image_grid(damaged_image, inpainted_image, original_image)
             self.logger.experiment.log_image(grid, name=f"val_epoch_{self.current_epoch:04}.png")
 
@@ -226,19 +198,14 @@ class GANInpainting(pl.LightningModule):
         return [g_opt, d_opt]
 
     def _create_image_grid(self, damaged_image, inpainted_image, original_image):
-        """
-        Create a grid of images for visualization:
-        Row 1: Damaged images
-        Row 2: Inpainted images
-        Row 3: Original images
-        """
-        # Denormalize images for visualization
-        damaged_image = damaged_image[:,: 3, :, :].cpu()
-        inpainted_image = inpainted_image[:,: 3, :, :].cpu()
-        original_image = original_image[:,: 3, :, :].cpu()
+        damaged_image = damaged_image[:, :3, :, :].cpu()
+        inpainted_image = inpainted_image[:, :3, :, :].cpu()
+        original_image = original_image[:, :3, :, :].cpu()
+        mask = damaged_image[:, 3:4, :, :].cpu()
+        reconstructed_image = mask * inpainted_image + (1 - mask) * original_image
 
         grid = torchvision.utils.make_grid(
-            torch.cat([damaged_image, inpainted_image, original_image], dim=0),
+            torch.cat([damaged_image, inpainted_image, reconstructed_image, original_image], dim=0),
             nrow=damaged_image.size(0),
         )
 

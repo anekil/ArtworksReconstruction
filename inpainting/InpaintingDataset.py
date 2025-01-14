@@ -1,10 +1,11 @@
 import io
 
+import cv2
 import numpy as np
 import torch
 import random
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 
 class InpaintingDataset(torch.utils.data.Dataset):
@@ -15,14 +16,19 @@ class InpaintingDataset(torch.utils.data.Dataset):
     def apply_damage(self, image):
         img = np.array(image)
         height, width, _ = img.shape
-        mask = np.ones((height, width), dtype=np.uint8)
+        mask = np.ones((height, width), dtype=np.uint8) * 255  # Initialize white mask
 
-        mask_size = int(min(height, width) // random.randint(4,10))
-        top_left_x = random.randint(0, width - mask_size)
-        top_left_y = random.randint(0, height - mask_size)
+        num_blobs = random.randint(3, 6)  # Number of blobs
+        max_radius = min(height, width) // 8  # Maximum radius for blobs
 
-        mask[top_left_y:top_left_y + mask_size, top_left_x:top_left_x + mask_size] = 0
-        img[top_left_y:top_left_y + mask_size, top_left_x:top_left_x + mask_size] = [255, 255, 255]
+        for _ in range(num_blobs):
+            radius = random.randint(max_radius // 4, max_radius)
+            center_x = random.randint(radius, width - radius)
+            center_y = random.randint(radius, height - radius)
+
+            # Draw a filled circle on the mask (black) and image (white damage)
+            cv2.circle(mask, (center_x, center_y), radius, 0, -1)  # Black blob on mask
+            cv2.circle(img, (center_x, center_y), radius, (255, 255, 255), -1)  # White blob on image
 
         return Image.fromarray(img), Image.fromarray(mask)
 

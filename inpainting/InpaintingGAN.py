@@ -2,92 +2,67 @@ import numpy as np
 import torch
 import torch.nn as nn
 import pytorch_lightning as pl
+import torch.nn.functional as F
 import torchvision
 
 
-class ResidualBlock(nn.Module):
-    def __init__(self, channels):
-        super(ResidualBlock, self).__init__()
-        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1, bias=False)
-        self.relu = nn.ReLU(inplace=True)
-        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1, bias=False)
+class Attention(nn.Module):
+    def __init__(self, in_channels):
+        super().__init__()
+        self.query_conv = nn.Conv2d(in_channels, in_channels // 8, kernel_size=1)
+        self.key_conv = nn.Conv2d(in_channels, in_channels // 8, kernel_size=1)
+        self.value_conv = nn.Conv2d(in_channels, in_channels, kernel_size=1)
+        self.gamma = nn.Parameter(torch.zeros(1))
 
     def forward(self, x):
-        identity = x
-        out = self.conv1(x)
-        out = self.relu(out)
-        out = self.conv2(out)
-        out += identity
-        out = self.relu(out)
-        return out
+        batch_size, C, width, height = x.size()
+        query = self.query_conv(x).view(batch_size, -1, width * height).permute(0, 2, 1)
+        key = self.key_conv(x).view(batch_size, -1, width * height)
+        attention = F.softmax(torch.bmm(query, key), dim=-1)
+        value = self.value_conv(x).view(batch_size, -1, width * height)
+        out = torch.bmm(value, attention.permute(0, 2, 1))
+        out = out.view(batch_size, C, width, height)
+        return self.gamma * out + x
 
 class Generator(nn.Module):
     def __init__(self):
-        super(Generator, self).__init__()
+        super().__init__()
         self.encoder = nn.Sequential(
-            nn.Conv2d(4, 64, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-
-            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.Conv2d(4, 64, kernel_size=4, stride=2, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1),
             nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-
-            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-
-            nn.Conv2d(256, 512, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(512),
-            nn.ReLU(inplace=True),
+            nn.ReLU()
         )
-
-        self.bottleneck = nn.Sequential(
-            ResidualBlock(512),
-            ResidualBlock(512),
-        )
-
+        self.attention = Attention(128)
         self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(512, 256, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-
-            nn.ConvTranspose2d(256, 128, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-
-            nn.ConvTranspose2d(128, 64, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-
-            nn.Conv2d(64, 3, kernel_size=3, stride=1, padding=1),
+            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),
+            nn.ReLU(),
+            nn.ConvTranspose2d(64, 3, kernel_size=4, stride=2, padding=1),
             nn.Sigmoid()
         )
 
     def forward(self, x):
         x = self.encoder(x)
-        x = self.bottleneck(x)
+        x = self.attention(x)
         x = self.decoder(x)
         return x
 
 
-class Critique(nn.Module):
+class Critic(nn.Module):
     def __init__(self):
-        super(Critique, self).__init__()
-        self.feature_extractor = torchvision.models.squeezenet1_1(weights='DEFAULT')
-        for param in self.feature_extractor.parameters():
-            param.requires_grad = False
-        self.classifier = nn.Sequential(
-            nn.Linear(1000, 16),
-            nn.ReLU(),
-            nn.Linear(16, 1),
+        super().__init__()
+        self.model = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=4, stride=2, padding=1),
+            nn.LeakyReLU(0.2),
+            nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(128),
+            nn.LeakyReLU(0.2),
+            nn.Conv2d(128, 1, kernel_size=4, stride=1, padding=0)
         )
 
     def forward(self, x):
-        x = self.feature_extractor(x)
-        x = torch.flatten(x, 1)
-        x = self.classifier(x)
-        return x
+        return self.model(x).view(-1)
 
 class GANInpainting(pl.LightningModule):
     def __init__(self, lr=1e-4):
@@ -95,7 +70,7 @@ class GANInpainting(pl.LightningModule):
         self.save_hyperparameters()
 
         self.generator = Generator()
-        self.critique = Critique()
+        self.critique = Critic()
         self.lr = lr
         self.n_critic = 5
         self.lambda_gp = 10.0
@@ -114,35 +89,26 @@ class GANInpainting(pl.LightningModule):
         # -----------------------
         # Train Critique
         # -----------------------
-        for _ in range(self.n_critic):
-            real_preds = self.critique(original_image)
-            fake_images = self(damaged_image).detach()
-            fake_preds = self.critique(fake_images)
-
-            c_loss = -(real_preds.mean() - fake_preds.mean())
-
-            gp = self.gradient_penalty(original_image, fake_images)
-            c_loss += self.lambda_gp * gp
-
-            self.log("critique_loss", c_loss, on_step=True, on_epoch=True, prog_bar=True)
-
-            self.manual_backward(c_loss)
-            c_opt.step()
-            c_opt.zero_grad()
+        real_preds = self.critique(original_image)
+        fake_images = self(damaged_image).detach()
+        fake_preds = self.critique(fake_images)
+        c_loss = -(real_preds.mean() - fake_preds.mean())
+        gp = self.gradient_penalty(original_image, fake_images)
+        c_loss += self.lambda_gp * gp
+        self.log("critique_loss", c_loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.manual_backward(c_loss)
+        c_opt.step()
+        c_opt.zero_grad()
 
         # -----------------------
         # Train Generator
         # -----------------------
         inpainted_image = self(damaged_image)
-
         fake_preds = self.critique(inpainted_image)
         g_adv_loss = -fake_preds.mean()
-
         g_rec_loss = self.reconstruction_loss(inpainted_image, original_image)
-
         g_loss = g_adv_loss + 100 * g_rec_loss
         self.log("generator_loss", g_loss, on_step=True, on_epoch=True, prog_bar=True)
-
         self.manual_backward(g_loss)
         g_opt.step()
         g_opt.zero_grad()
@@ -156,7 +122,6 @@ class GANInpainting(pl.LightningModule):
         interpolated.requires_grad_(True)
 
         interpolated_preds = self.critique(interpolated)
-
         gradients = torch.autograd.grad(
             outputs=interpolated_preds,
             inputs=interpolated,
@@ -201,11 +166,9 @@ class GANInpainting(pl.LightningModule):
         damaged_image = damaged_image[:, :3, :, :].cpu()
         inpainted_image = inpainted_image[:, :3, :, :].cpu()
         original_image = original_image[:, :3, :, :].cpu()
-        mask = damaged_image[:, 3:4, :, :].cpu()
-        reconstructed_image = mask * inpainted_image + (1 - mask) * original_image
 
         grid = torchvision.utils.make_grid(
-            torch.cat([damaged_image, inpainted_image, reconstructed_image, original_image], dim=0),
+            torch.cat([damaged_image, inpainted_image, original_image], dim=0),
             nrow=damaged_image.size(0),
         )
 

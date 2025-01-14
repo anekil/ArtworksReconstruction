@@ -1,4 +1,5 @@
 import numpy as np
+import timm
 import torch
 import torch.nn as nn
 import pytorch_lightning as pl
@@ -101,9 +102,6 @@ class UNetGenerator(nn.Module):
 
     def forward(self, x):
         # Main Branch
-        mask = x[:, 3, :, :]
-        damaged_img = x[:, :3, :, :]
-
         skip_connections = []
         for layer in self.encoder:
             x = layer(x)
@@ -125,47 +123,22 @@ class UNetGenerator(nn.Module):
 
         x = self.painting_branch(painting_connections)
         # x = self.last_layer(x)
-        reconstructed_img = torch.sigmoid(x)
-
-        mask = mask.unsqueeze(1)
-        mask_3d = mask.expand_as(damaged_img)
-        final_img = mask_3d * damaged_img + (1 - mask_3d) * reconstructed_img
-
-        return final_img
+        return torch.sigmoid(x)
 
 class Critique(nn.Module):
-    def __init__(self, in_channels=3, features=None):
+    def __init__(self):
         super(Critique, self).__init__()
-        if features is None:
-            features = [16, 32, 64, 128]
-        layers = []
-        for feature in features:
-            layers.append(
-                nn.Sequential(
-                    nn.Conv2d(in_channels, feature, kernel_size=5),
-                    nn.MaxPool2d(2, 2),
-                    nn.LeakyReLU(0.2)
-                )
-            )
-            in_channels = feature
-        self.conv = nn.Sequential(*layers)
-        self.fc = nn.Sequential(
-            nn.Linear(128 * 16, 512),
-            nn.LeakyReLU(0.2),
+        self.feature_extractor = timm.create_model("resnet18", pretrained=True, num_classes=0)
+        self.classifier = nn.Sequential(
             nn.Linear(512, 256),
-            nn.LeakyReLU(0.2),
-            nn.Linear(256, 128),
-            nn.LeakyReLU(0.2),
-            nn.Linear(128, 64),
-            nn.LeakyReLU(0.2),
-            nn.Linear(64, 1)
+            nn.ReLU(),
+            nn.Linear(256, 1),
         )
 
     def forward(self, x):
-        x = self.conv(x)
-        x = torch.flatten(x, 1)
-        x = self.fc(x)
-        return x
+        features = self.feature_extractor(x)
+        validity = self.classifier(features)
+        return validity
 
 class InpaintingMIGAN(pl.LightningModule):
     def __init__(self, lr=1e-4):
@@ -275,17 +248,16 @@ class InpaintingMIGAN(pl.LightningModule):
         damaged_image, original_image = batch
         inpainted_image = self(damaged_image)
 
-        # grid = self._create_image_grid(damaged_image, inpainted_image, original_image)
-        # output_dir = "test_images"
-        # os.makedirs(output_dir, exist_ok=True)
-        # save_path = os.path.join(output_dir, f"test_batch_{batch_idx}.png")
-        # torchvision.utils.save_image(grid, save_path)
+        mask = damaged_image[:, 3, :, :]
+        damaged_img = damaged_image[:, :3, :, :]
 
-        # print(f'original_image:{original_image.shape} damaged_image:{damaged_image.shape} inpainted_image:{inpainted_image.shape}')
+        mask = mask.unsqueeze(1)
+        mask_3d = mask.expand_as(damaged_img)
+        reconstructed_image = mask_3d * damaged_img + (1 - mask_3d) * inpainted_image
 
-        self.log("test_loss", self.reconstruction_loss(inpainted_image, original_image))
+        self.log("test_loss", self.reconstruction_loss(reconstructed_image, original_image))
         if batch_idx == 0:
-            grid = self._create_image_grid(damaged_image, inpainted_image, original_image)
+            grid = self._create_image_grid(damaged_image, reconstructed_image, original_image)
             self.logger.experiment.log_image(grid, name=f"test.png")
 
     def configure_optimizers(self):

@@ -1,10 +1,10 @@
-import numpy as np
 import torch
 import torch.nn as nn
 import pytorch_lightning as pl
 import torch.nn.functional as F
+import torchvision.models as models
 import torchvision
-
+import numpy as np
 
 class Attention(nn.Module):
     def __init__(self, in_channels):
@@ -75,12 +75,22 @@ class GANInpainting(pl.LightningModule):
         self.n_critic = 5
         self.lambda_gp = 10.0
 
-        self.adversarial_loss = None
+        vgg = models.vgg16(pretrained=True)
+        self.feature_extractor = nn.Sequential(*list(vgg.features[:16]))
+        self.feature_extractor.eval()
+        for param in self.feature_extractor.parameters():
+            param.requires_grad = False
+
         self.reconstruction_loss = nn.L1Loss()
         self.automatic_optimization = False
 
     def forward(self, damaged_image):
         return self.generator(damaged_image)
+
+    def perceptual_loss(self, img1, img2):
+        features_img1 = self.feature_extractor(img1)
+        features_img2 = self.feature_extractor(img2)
+        return F.l1_loss(features_img1, features_img2)
 
     def training_step(self, batch, batch_idx):
         g_opt, c_opt = self.optimizers()
@@ -106,8 +116,9 @@ class GANInpainting(pl.LightningModule):
         inpainted_image = self(damaged_image)
         fake_preds = self.critique(inpainted_image)
         g_adv_loss = -fake_preds.mean()
+        g_perc_loss = self.perceptual_loss(inpainted_image, original_image)
         g_rec_loss = self.reconstruction_loss(inpainted_image, original_image)
-        g_loss = g_adv_loss + 100 * g_rec_loss
+        g_loss = g_adv_loss + 3 * g_rec_loss + 2 * g_perc_loss
         self.log("generator_loss", g_loss, on_step=True, on_epoch=True, prog_bar=True)
         self.manual_backward(g_loss)
         g_opt.step()
@@ -131,7 +142,7 @@ class GANInpainting(pl.LightningModule):
         )[0]
 
         gradients = gradients.view(batch_size, -1)
-        gradient_norm = gradients.norm(2, dim=1)
+        gradient_norm = gradients.norm(2, dim=1) + 1e-8
         gp = ((gradient_norm - 1) ** 2).mean()
         return gp
 

@@ -1,200 +1,174 @@
+import io
+
 import torch
 import torch.nn as nn
-from torch import optim
+import torch.nn.functional as F
+from PIL import Image
+from matplotlib import pyplot as plt
 from torch.utils.data import DataLoader, random_split
-import numpy as np
-import random
-import logging
-from comet_ml import Experiment
-import time
 from torchvision import models
+import pytorch_lightning as pl
+from torchvision.utils import make_grid
 
-class SuperResolutionTrainer:
-    def __init__(self, model, dataset, config):
-        self.model = model
+
+class SharedFeaturesExtractor(nn.Module):
+    def __init__(self):
+        super().__init__()
+        model = models.vgg16(weights="IMAGENET1K_V1").features
+        self.layers = nn.ModuleList([
+            model[0:2],
+            model[2:4],
+            model[4:7],
+        ])
+        for param in self.parameters():
+            param.requires_grad = False
+
+    def forward(self, x, layer_ids):
+        features = []
+        for i, layer in enumerate(self.layers):
+            x = layer(x)
+            if i in layer_ids:
+                features.append(x)
+        return features
+
+
+class PerceptualLoss(nn.Module):
+    def __init__(self, feature_extractor):
+        super().__init__()
+        self.feature_extractor = feature_extractor
+        self.layer_ids = [0, 1, 2]
+
+    def forward(self, pred, target):
+        pred_features = self.feature_extractor(pred, self.layer_ids)
+        target_features = self.feature_extractor(target, self.layer_ids)
+        return sum(F.l1_loss(p, t) for p, t in zip(pred_features, target_features))
+
+
+class ResNet50Autoencoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Dropout(0.3),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Dropout(0.3),
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+        )
+        self.decoder = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True),
+            nn.Conv2d(256, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True),
+            nn.Conv2d(128, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 3, kernel_size=3, padding=1),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x):
+        encoded = self.encoder(x)
+        return self.decoder(encoded)
+
+
+class SuperResolutionLightningModule(pl.LightningModule):
+    def __init__(self, config, dataset):
+        super().__init__()
+        self.save_hyperparameters(config)
+        self.model = ResNet50Autoencoder()
+        self.perceptual_loss = PerceptualLoss(SharedFeaturesExtractor())
+        self.mse_loss = nn.MSELoss()
         self.dataset = dataset
-        self.config = config
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.logger = logging.getLogger("SuperResolutionTrainer")
-        logging.basicConfig(level=logging.INFO)
-        self.experiment = None
 
-    def initialize_model(self):
+    def forward(self, x):
+        return self.model(x)
 
-        class ResNet50Autoencoder(nn.Module):
-            def __init__(self):
-                super(ResNet50Autoencoder, self).__init__()
+    def training_step(self, batch, batch_idx):
+        low_res, high_res = batch
+        outputs = self(low_res)
+        p_loss = self.perceptual_loss(outputs, high_res)
+        m_loss = self.mse_loss(outputs, high_res)
+        loss = p_loss + m_loss
+        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("train_p_loss", p_loss, on_step=False, on_epoch=True, prog_bar=False)
+        self.log("train_m_loss", m_loss, on_step=False, on_epoch=True, prog_bar=False)
+        return loss
 
-                backbone = models.resnet50(pretrained=True)
+    def validation_step(self, batch, batch_idx):
+        low_res, high_res = batch
+        outputs = self(low_res)
+        p_loss = self.perceptual_loss(outputs, high_res)
+        m_loss = self.mse_loss(outputs, high_res)
+        loss = p_loss + m_loss
+        self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("val_p_loss", p_loss, on_step=False, on_epoch=True, prog_bar=False)
+        self.log("val_m_loss", m_loss, on_step=False, on_epoch=True, prog_bar=False)
+        if batch_idx < 5:
+            self.log_images(low_res, outputs, high_res, batch_idx, "val")
 
-                self.encoder = nn.Sequential(
-                    nn.Conv2d(3, 64, kernel_size=3, padding=1),  # (224, 224, 3) -> (224, 224, 64)
-                    nn.ReLU(inplace=True),
-                    nn.Conv2d(64, 64, kernel_size=3, padding=1),  # (224, 224, 64) -> (224, 224, 64)
-                    nn.ReLU(inplace=True),
-                    nn.MaxPool2d(kernel_size=2, stride=2, padding=0),  # (224, 224, 64) -> (112, 112, 64)
-                    nn.Dropout(0.3),
+    def test_step(self, batch, batch_idx):
+        low_res, high_res = batch
+        outputs = self(low_res)
+        p_loss = self.perceptual_loss(outputs, high_res)
+        m_loss = self.mse_loss(outputs, high_res)
+        loss = p_loss + m_loss
+        self.log("test_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("test_p_loss", p_loss, on_step=False, on_epoch=True, prog_bar=False)
+        self.log("test_m_loss", m_loss, on_step=False, on_epoch=True, prog_bar=False)
+        if batch_idx < 5:
+            self.log_images(low_res, outputs, high_res, batch_idx, "test")
 
-                    nn.Conv2d(64, 128, kernel_size=3, padding=1),  # (112, 112, 64) -> (112, 112, 128)
-                    nn.ReLU(inplace=True),
-                    nn.Conv2d(128, 128, kernel_size=3, padding=1),  # (112, 112, 128) -> (112, 112, 128)
-                    nn.ReLU(inplace=True),
-                    nn.MaxPool2d(kernel_size=2, stride=2, padding=0),  # (112, 112, 128) -> (56, 56, 128)
 
-                    nn.Conv2d(128, 256, kernel_size=3, padding=1),  # (56, 56, 128) -> (56, 56, 256)
-                    nn.ReLU(inplace=True)
-                )
+    def log_images(self, low_res, outputs, high_res, batch_idx, stage):
+        images = torch.cat([low_res, outputs, high_res], dim=0)
+        grid = make_grid(images, nrow=low_res.size(0), normalize=True, value_range=(0, 1))
+        grid_np = grid.permute(1, 2, 0).cpu().numpy()
+        buffer = io.BytesIO()
+        plt.imsave(buffer, grid_np, format="png")
+        buffer.seek(0)
+        img = Image.open(buffer)
+        self.logger.experiment.log_image(img, name = f"superres_{stage}_idx_{batch_idx}")
+        buffer.close()
 
-                # Decoder
-                self.decoder = nn.Sequential(
-                    nn.Conv2d(256, 128, kernel_size=3, padding=1),  # (56, 56, 256) -> (56, 56, 128)
-                    nn.ReLU(inplace=True),
-                    nn.Conv2d(128, 128, kernel_size=3, padding=1),  # (56, 56, 128) -> (56, 56, 128)
-                    nn.ReLU(inplace=True),
-                    nn.Upsample(scale_factor=2, mode='nearest'),  # (56, 56, 128) -> (112, 112, 128)
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.parameters(), lr=self.hparams.learning_rate)
 
-                    nn.Conv2d(128, 64, kernel_size=3, padding=1),  # (112, 112, 128) -> (112, 112, 64)
-                    nn.ReLU(inplace=True),
-                    nn.Conv2d(64, 64, kernel_size=3, padding=1),  # (112, 112, 64) -> (112, 112, 64)
-                    nn.ReLU(inplace=True),
-                    nn.Upsample(scale_factor=2, mode='nearest'),  # (112, 112, 64) -> (224, 224, 64)
-
-                    nn.Conv2d(64, 3, kernel_size=3, padding=1),  # (224, 224, 64) -> (224, 224, 3)
-                    nn.ReLU(inplace=True)
-                )
-
-            def forward(self, x):
-                    x = self.encoder(x)
-                    x = self.decoder(x)
-                    return x
-
-        model = ResNet50Autoencoder()
-        self.experiment.set_model_graph(str(model))
-
-        return model.to(self.device)
-
-    def create_dataloaders(self, batch_size):
+    def setup(self, stage=None):
         total_size = len(self.dataset)
         train_size = int(0.7 * total_size)
         val_size = int(0.15 * total_size)
         test_size = total_size - train_size - val_size
-        train_dataset, val_dataset, test_dataset = random_split(self.dataset, [train_size, val_size, test_size])
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
-        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
-        return train_loader, val_loader, test_loader
+        self.train_dataset, self.val_dataset, self.test_dataset = random_split(
+            self.dataset, [train_size, val_size, test_size]
+        )
 
-    def train(self):
-        self.experiment = Experiment(api_key=self.config["comet_api_key"], project_name=self.config["project_name"])
-        self.experiment.log_parameters(self.config)
-        if self.model is None:
-            self.model = self.initialize_model()
-        model = self.model.to(self.device)
-        criterion = nn.MSELoss()
-        optimizer = optim.Adam(model.parameters(), lr=self.config["learning_rate"])
-        train_loader, val_loader, test_loader = self.create_dataloaders(self.config["batch_size"])
-        best_val_loss = float('inf')
-        patience_counter = 0
-        total_epochs = self.config["max_epochs"]
-        global_step = 0
-        for epoch in range(total_epochs):
-            model.train()
-            total_train_loss = 0.0
-            epoch_start_time = time.time()
-            print(f"\nEpoch {epoch + 1}/{total_epochs}")
-            for batch_idx, (low_res_images, high_res_images) in enumerate(train_loader):
-                batch_start_time = time.time()
-                low_res_images = low_res_images.to(self.device)
-                high_res_images = high_res_images.to(self.device)
-                optimizer.zero_grad()
-                outputs = model(low_res_images)
-                loss = criterion(outputs, high_res_images)
-                loss.backward()
-                optimizer.step()
-                total_train_loss += loss.item()
-                global_step += 1
-                batch_time = time.time() - batch_start_time
-                current = batch_idx * self.config["batch_size"] + len(low_res_images)
-                total = len(train_loader.dataset)
-                percent = 100.0 * batch_idx / len(train_loader)
-                print(f"Train Epoch: {epoch + 1} [{current}/{total} ({percent:.0f}%)] Loss: {loss.item():.6f} Time: {batch_time:.2f}s")
-                self.experiment.log_metric("batch_train_loss", loss.item(), step=global_step)
-                self.experiment.log_metric("batch_time", batch_time, step=global_step)
-            avg_train_loss = total_train_loss / len(train_loader)
-            model.eval()
-            total_val_loss = 0.0
-            with torch.no_grad():
-                for low_res_images, high_res_images in val_loader:
-                    low_res_images = low_res_images.to(self.device)
-                    high_res_images = high_res_images.to(self.device)
-                    outputs = model(low_res_images)
-                    loss = criterion(outputs, high_res_images)
-                    total_val_loss += loss.item()
-            avg_val_loss = total_val_loss / len(val_loader)
-            self.experiment.log_metric("epoch_train_loss", avg_train_loss, epoch=epoch + 1)
-            self.experiment.log_metric("epoch_val_loss", avg_val_loss, epoch=epoch + 1)
-            epoch_duration = time.time() - epoch_start_time
-            print(f"Epoch {epoch + 1} completed in {epoch_duration:.2f}s - Avg Train Loss: {avg_train_loss:.6f}, Avg Val Loss: {avg_val_loss:.6f}")
-            self.logger.info(f"Epoch {epoch + 1}: Avg Train Loss = {avg_train_loss:.6f}, Avg Val Loss = {avg_val_loss:.6f}")
-            if avg_val_loss < best_val_loss:
-                best_val_loss = avg_val_loss
-                patience_counter = 0
-                print(f"Validation loss decreased ({best_val_loss:.6f}). Saving model...")
-            else:
-                patience_counter += 1
-                print(f"No improvement in validation loss for {patience_counter} epochs.")
-            if patience_counter >= self.config["patience"]:
-                self.logger.info(f"Early stopping at epoch {epoch + 1}")
-                print("Early stopping triggered.")
-                break
-            model.eval()
-            with torch.no_grad():
-                self.log_images(self.experiment, val_loader, epoch + 1)
-            self.experiment.log_text(f"Epoch {epoch + 1} completed in {epoch_duration:.2f}s")
-        self.test(model, test_loader, criterion)
-        self.experiment.end()
+    def train_dataloader(self):
+        return DataLoader(self.train_dataset, batch_size=self.hparams.batch_size, shuffle=True, num_workers=4)
 
-    def test(self, model, test_loader, criterion):
-        print("\nStarting testing phase...")
-        model.eval()
-        total_test_loss = 0.0
-        with torch.no_grad():
-            for low_res_images, high_res_images in test_loader:
-                low_res_images = low_res_images.to(self.device)
-                high_res_images = high_res_images.to(self.device)
-                outputs = model(low_res_images)
-                loss = criterion(outputs, high_res_images)
-                total_test_loss += loss.item()
-        avg_test_loss = total_test_loss / len(test_loader)
-        print(f"Test Loss: {avg_test_loss:.6f}")
-        self.logger.info(f"Test Loss: {avg_test_loss:.6f}")
-        self.experiment.log_metric("test_loss", avg_test_loss)
-        self.log_images(self.experiment, test_loader, 'test')
+    def val_dataloader(self):
+        return DataLoader(self.val_dataset, batch_size=self.hparams.batch_size, shuffle=False, num_workers=4)
 
-    def log_images(self, experiment, data_loader, epoch):
-        for low_res_images, high_res_images in data_loader:
-            low_res_images = low_res_images.to(self.device)
-            high_res_images = high_res_images.to(self.device)
-            outputs = self.model(low_res_images)
-            break
-        num_images = min(5, low_res_images.size(0))
-        indices = random.sample(range(low_res_images.size(0)), num_images)
-        for idx in indices:
-            lri = low_res_images[idx].cpu()
-            ri = outputs[idx].cpu()
-            hri = high_res_images[idx].cpu()
-            lri_np = np.transpose(lri.detach().numpy(), (1, 2, 0))
-            ri_np = np.transpose(ri.detach().numpy(), (1, 2, 0))
-            hri_np = np.transpose(hri.detach().numpy(), (1, 2, 0))
-            lri_np = (lri_np - lri_np.min()) / (lri_np.max() - lri_np.min() + 1e-8)
-            ri_np = (ri_np - ri_np.min()) / (ri_np.max() - ri_np.min() + 1e-8)
-            hri_np = (hri_np - hri_np.min()) / (hri_np.max() - hri_np.min() + 1e-8)
-            combined = np.hstack([lri_np, ri_np, hri_np]) * 255
-            combined = combined.astype(np.uint8)
-            experiment.log_image(combined, name=f"superres_epoch_{epoch}_idx_{idx}", step=epoch)
-            input_res = f"Input: {lri_np.shape[0]}x{lri_np.shape[1]}"
-            output_res = f"Output: {ri_np.shape[0]}x{ri_np.shape[1]}"
-            target_res = f"Target: {hri_np.shape[0]}x{hri_np.shape[1]}"
-            experiment.log_text(f"{input_res}, {output_res}, {target_res}", step=epoch)
+    def test_dataloader(self):
+        return DataLoader(self.test_dataset, batch_size=self.hparams.batch_size, shuffle=False, num_workers=4)
 
-        print(f"Logged {num_images} images for Epoch {epoch}")

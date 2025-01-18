@@ -13,7 +13,12 @@ import pandas as pd
 from inpainting.InpaintingDataset import *
 from torch.utils.data import DataLoader
 
-df = pd.read_parquet('local_wikiart.parquet', columns=['title', 'artist', 'date', 'genre', 'style', 'image']).head(8000)
+df = pd.read_parquet('local_wikiart.parquet', columns=['title', 'artist', 'date', 'genre', 'style', 'image'])
+cluster_csv_path = "image_label_dict.csv"
+cluster_df = pd.read_csv(cluster_csv_path)
+cluster_df['idx'] = cluster_df['idx'].astype(int)
+merged_df = df.merge(cluster_df, left_index=True, right_on="idx", how="left")
+df = merged_df[['image', 'cluster']].head(8000)
 
 total_len = len(df)
 train_len = int(0.8 * total_len)
@@ -33,16 +38,17 @@ to_input = v2.Compose([
             v2.ToDtype(torch.float32, scale=True),
 ])
 
-train_dataset = InpaintingDataset(df, transform=transform, to_input=to_input)
+train_dataset = InpaintingDataset(train_df, transform=transform, to_input=to_input)
 train_dataloader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=10)
-val_dataset = InpaintingDataset(df, transform=transform, to_input=to_input)
+val_dataset = InpaintingDataset(val_df, transform=transform, to_input=to_input)
 val_dataloader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=10)
-test_dataset = InpaintingDataset(df, transform=transform, to_input=to_input)
+test_dataset = InpaintingDataset(test_df, transform=transform, to_input=to_input)
 test_dataloader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=10)
 
 import matplotlib.pyplot as plt
 
 damaged_img, original_img = train_dataset[0]
+print(damaged_img.shape)
 mask = damaged_img[3, :, :]
 damaged_img = damaged_img[:3, :, :]
 

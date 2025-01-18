@@ -1,14 +1,13 @@
-import io
+import os
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from PIL import Image
 from matplotlib import pyplot as plt
 from torch.utils.data import DataLoader, random_split
 from torchvision import models
 import pytorch_lightning as pl
-from torchvision.utils import make_grid
+import torchvision.utils as vutils
 
 
 class SharedFeaturesExtractor(nn.Module):
@@ -109,7 +108,7 @@ class SuperResolutionLightningModule(pl.LightningModule):
         outputs = self(low_res)
         p_loss = self.perceptual_loss(outputs, high_res)
         m_loss = self.mse_loss(outputs, high_res)
-        loss = p_loss + m_loss
+        loss = p_loss + 10 * m_loss
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
         self.log("train_p_loss", p_loss, on_step=False, on_epoch=True, prog_bar=False)
         self.log("train_m_loss", m_loss, on_step=False, on_epoch=True, prog_bar=False)
@@ -120,39 +119,44 @@ class SuperResolutionLightningModule(pl.LightningModule):
         outputs = self(low_res)
         p_loss = self.perceptual_loss(outputs, high_res)
         m_loss = self.mse_loss(outputs, high_res)
-        loss = p_loss + m_loss
+        loss = p_loss + + 10 * m_loss
         self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
         self.log("val_p_loss", p_loss, on_step=False, on_epoch=True, prog_bar=False)
         self.log("val_m_loss", m_loss, on_step=False, on_epoch=True, prog_bar=False)
         if batch_idx < 5:
-            self.log_images(low_res, outputs, high_res, batch_idx, "val")
+            self.log_images(low_res, outputs, high_res, epoch=self.current_epoch, batch_idx=batch_idx, stage="val")
 
     def test_step(self, batch, batch_idx):
         low_res, high_res = batch
         outputs = self(low_res)
         p_loss = self.perceptual_loss(outputs, high_res)
         m_loss = self.mse_loss(outputs, high_res)
-        loss = p_loss + m_loss
+        loss = p_loss + + 10 * m_loss
         self.log("test_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
         self.log("test_p_loss", p_loss, on_step=False, on_epoch=True, prog_bar=False)
         self.log("test_m_loss", m_loss, on_step=False, on_epoch=True, prog_bar=False)
         if batch_idx < 5:
-            self.log_images(low_res, outputs, high_res, batch_idx, "test")
+            self.log_images(low_res, outputs, high_res, epoch=self.current_epoch, batch_idx=batch_idx, stage="test")
 
-
-    def log_images(self, low_res, outputs, high_res, batch_idx, stage):
-        images = torch.cat([low_res, outputs, high_res], dim=0)
-        grid = make_grid(images, nrow=low_res.size(0), normalize=True, value_range=(0, 1))
+    def log_images(self, low_res, outputs, high_res, epoch, batch_idx, stage):
+        triplets = torch.cat([low_res, outputs, high_res], dim=-1)
+        grid = vutils.make_grid(triplets, nrow=1, normalize=True, value_range=(0, 1))
         grid_np = grid.permute(1, 2, 0).cpu().numpy()
-        buffer = io.BytesIO()
-        plt.imsave(buffer, grid_np, format="png")
-        buffer.seek(0)
-        img = Image.open(buffer)
-        self.logger.experiment.log_image(img, name = f"superres_{stage}_idx_{batch_idx}")
-        buffer.close()
+        filename = f"superres_{stage}_epoch_{str(epoch).zfill(3)}_batch_{batch_idx}.png"
+        plt.imsave(filename, grid_np)
+        self.logger.experiment.log_image(filename, name=filename)
+        print(f"Logged image: {filename}")
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.hparams.learning_rate)
+
+    def on_train_end(self):
+        experiment_name = self.logger.experiment.get_name()
+        filename = f"superres_{experiment_name}_model.ckpt"
+        path = os.path.join(self.hparams.get("save_dir", "."), filename)
+        self.trainer.save_checkpoint(path)
+        self.logger.experiment.log_asset(path)
+        print(f"Model saved as: {path}")
 
     def setup(self, stage=None):
         total_size = len(self.dataset)

@@ -13,15 +13,15 @@ torch.set_float32_matmul_precision('medium')
 config = {
     "comet_api_key": "lliw2sljNWoBqtmqb9KztyYsG",
     "project_name": "supperresolution-test-resnet50",
-    #"model_save_path": "./models",
-    "max_epochs": 50,
+    "model_save_path": "./models",
+    "max_epochs": 10,
     "patience": 15,
     "batch_size": 16,
     "learning_rate": 1e-4
 }
 
 #%%
-df = pd.read_parquet('local_wikiart.parquet', columns=['title', 'artist', 'date', 'genre', 'style', 'image']).head(8000)
+df = pd.read_parquet('local_wikiart.parquet', columns=['title', 'artist', 'date', 'genre', 'style', 'image'])
 
 #%%
 transform = v2.Compose([
@@ -39,3 +39,5 @@ model = SuperResolutionLightningModule(config, dataset)
 trainer = pl.Trainer(logger=comet_logger, max_epochs=config["max_epochs"], log_every_n_steps=10)
 trainer.fit(model)
 trainer.test(model)
+
+torch.save(model.state_dict(), f"superresolution.pth")

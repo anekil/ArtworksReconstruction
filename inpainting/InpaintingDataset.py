@@ -17,35 +17,47 @@ class InpaintingDataset(torch.utils.data.Dataset):
     def apply_damage(self, image):
         img = np.array(image)
         height, width, _ = img.shape
-        mask = np.full((height, width), 255, dtype=np.uint8)
+        mask = np.ones((height, width), dtype=np.uint8)
 
-        num_shapes = random.randint(4, 8)
-        max_size = min(height, width) // 8
+        max_area = int(0.16 * height * width)
+        current_area = 0
+        num_shapes = random.randint(8, 12)
+        max_size = min(height, width) // 10
 
-        for _ in range(num_shapes):
+        while current_area < max_area and num_shapes > 0:
             shape_type = random.choice(["circle", "ellipse", "rectangle"])
+            temp_mask = np.ones_like(mask)
             if shape_type == "circle":
-                radius = random.randint(max_size // 4, max_size)
+                radius = random.randint(max_size // 4, max_size // 2)
                 center = (random.randint(radius, width - radius), random.randint(radius, height - radius))
-                cv2.circle(mask, center, radius, 0, thickness=-1)
+                cv2.circle(temp_mask, center, radius, 0, thickness=-1)
 
             elif shape_type == "ellipse":
                 center = (random.randint(max_size, width - max_size), random.randint(max_size, height - max_size))
-                axes = (random.randint(max_size // 4, max_size), random.randint(max_size // 4, max_size))
+                axes = (random.randint(max_size // 6, max_size // 3), random.randint(max_size // 6, max_size // 3))
                 angle = random.randint(0, 360)
-                cv2.ellipse(mask, center, axes, angle, 0, 360, 0, thickness=-1)
+                cv2.ellipse(temp_mask, center, axes, angle, 0, 360, 0, thickness=-1)
 
             elif shape_type == "rectangle":
                 top_left = (random.randint(0, width - max_size), random.randint(0, height - max_size))
-                bottom_right = (top_left[0] + random.randint(max_size // 4, max_size),
-                                top_left[1] + random.randint(max_size // 4, max_size))
-                cv2.rectangle(mask, top_left, bottom_right, 0, thickness=-1)
+                bottom_right = (top_left[0] + random.randint(max_size // 6, max_size // 3),
+                                top_left[1] + random.randint(max_size // 6, max_size // 3))
+                cv2.rectangle(temp_mask, top_left, bottom_right, 0, thickness=-1)
+
+            new_area = np.sum(temp_mask == 0)
+            if current_area + new_area > max_area:
+                break
+
+            mask = cv2.bitwise_and(mask, temp_mask)
+            current_area += new_area
+            num_shapes -= 1
 
         img[mask == 0] = [255, 255, 255]
 
-        kernel = np.ones((5, 5), np.uint8)
+        mask = mask * 255
+        kernel = np.ones((5,5), np.uint8)
         dilated_mask = cv2.dilate(mask, kernel, iterations=1)
-        blurred_mask = cv2.GaussianBlur(dilated_mask, (9, 9), sigmaX=0)
+        blurred_mask = cv2.GaussianBlur(dilated_mask, (5,5), sigmaX=0)
         return Image.fromarray(img), Image.fromarray(blurred_mask)
 
     def __getitem__(self, idx):
@@ -72,7 +84,8 @@ class InpaintingDataset(torch.utils.data.Dataset):
             damaged_image = self.to_input(damaged_image)
             mask = self.to_input(mask)
 
-        damaged_image = torch.cat([damaged_image, mask], dim=0)
+        cluster = torch.ones_like(mask) * row['cluster']
+        damaged_image = torch.cat([damaged_image, mask, cluster], dim=0)
 
         return damaged_image, image
 

@@ -5,45 +5,70 @@ import torch.nn.functional as F
 import torchvision
 import numpy as np
 
-class Attention(nn.Module):
+
+class ResidualBlock(nn.Module):
     def __init__(self, in_channels):
-        super().__init__()
-        self.query_conv = nn.Conv2d(in_channels, in_channels // 8, kernel_size=1)
-        self.key_conv = nn.Conv2d(in_channels, in_channels // 8, kernel_size=1)
-        self.value_conv = nn.Conv2d(in_channels, in_channels, kernel_size=1)
-        self.gamma = nn.Parameter(torch.zeros(1))
+        super(ResidualBlock, self).__init__()
+        self.block = nn.Sequential(
+            nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(in_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(in_channels)
+        )
 
     def forward(self, x):
-        batch_size, C, width, height = x.size()
-        query = self.query_conv(x).view(batch_size, -1, width * height).permute(0, 2, 1)
-        key = self.key_conv(x).view(batch_size, -1, width * height)
-        attention = F.softmax(torch.bmm(query, key), dim=-1)
-        value = self.value_conv(x).view(batch_size, -1, width * height)
-        out = torch.bmm(value, attention.permute(0, 2, 1))
-        out = out.view(batch_size, C, width, height)
-        return self.gamma * out + x
+        return x + self.block(x)
+
 
 class Generator(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.encoder = nn.Sequential(
-            nn.Conv2d(4, 64, kernel_size=4, stride=2, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU()
+    def __init__(self, in_channels=5, out_channels=3, num_residual_blocks=6, features=64):
+        super(Generator, self).__init__()
+        self.initial = nn.Sequential(
+            nn.Conv2d(in_channels, features, kernel_size=7, padding=3, bias=False),
+            nn.BatchNorm2d(features),
+            nn.ReLU(inplace=True)
         )
-        self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),
-            nn.ReLU(),
-            nn.ConvTranspose2d(64, 3, kernel_size=4, stride=2, padding=1),
+
+        self.down1 = nn.Sequential(
+            nn.Conv2d(features, features * 2, kernel_size=4, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(features * 2),
+            nn.ReLU(inplace=True)
+        )
+        self.down2 = nn.Sequential(
+            nn.Conv2d(features * 2, features * 4, kernel_size=4, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(features * 4),
+            nn.ReLU(inplace=True)
+        )
+
+        self.res_blocks = nn.Sequential(
+            *[ResidualBlock(features * 4) for _ in range(num_residual_blocks)]
+        )
+
+        self.up1 = nn.Sequential(
+            nn.ConvTranspose2d(features * 4, features * 2, kernel_size=4, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(features * 2),
+            nn.ReLU(inplace=True)
+        )
+        self.up2 = nn.Sequential(
+            nn.ConvTranspose2d(features * 2, features, kernel_size=4, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(features),
+            nn.ReLU(inplace=True)
+        )
+
+        self.final = nn.Sequential(
+            nn.Conv2d(features, out_channels, kernel_size=7, padding=3),
             nn.Sigmoid()
         )
 
     def forward(self, x):
-        x = self.encoder(x)
-        x = self.decoder(x)
-        return x
+        x = self.initial(x)
+        x = self.down1(x)
+        x = self.down2(x)
+        x = self.res_blocks(x)
+        x = self.up1(x)
+        x = self.up2(x)
+        return self.final(x)
 
 class PatchCritic(nn.Module):
     def __init__(self):
@@ -54,7 +79,7 @@ class PatchCritic(nn.Module):
             nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1),
             nn.BatchNorm2d(128),
             nn.LeakyReLU(0.1),
-            nn.Conv2d(128, 256, kernel_size=4, stride=2, padding=1),  # Increased number of channels
+            nn.Conv2d(128, 256, kernel_size=4, stride=2, padding=1),
             nn.BatchNorm2d(256),
             nn.LeakyReLU(0.1),
             nn.Conv2d(256, 1, kernel_size=4, stride=1, padding=0)

@@ -82,36 +82,30 @@ class AutoencoderTrainer:
         return train_loader, val_loader
 
     def log_images(self, experiment, original_images, reconstructed_images, epoch, prefix="train"):
-        mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1).to(self.device)
-        std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1).to(self.device)
-        
-        def denormalize(images):
-            return images * std + mean
-        
         num_images = min(10, original_images.size(0))
         indices = torch.randperm(original_images.size(0))[:num_images]
         
         for idx in range(num_images):
             i = indices[idx]
-            original = denormalize(original_images[i]).cpu().numpy()
-            reconstructed = denormalize(reconstructed_images[i]).cpu().numpy()
+            original = original_images[i].cpu().numpy()
+            reconstructed = reconstructed_images[i].cpu().numpy()
             
+            # Transpose from CHW to HWC format
             original = np.transpose(original, (1, 2, 0)).clip(0, 1)
             reconstructed = np.transpose(reconstructed, (1, 2, 0)).clip(0, 1)
             
             height, width = original.shape[:2]
-            
             combined_image = np.zeros((height, width * 2, 3))
             combined_image[:, :width] = original
             combined_image[:, width:] = reconstructed
             
             experiment.log_image(
-                combined_image * 255,
+                combined_image * 255,  # Scale back to [0,255] for visualization
                 name=f"{prefix}_comparison_{idx}",
                 step=epoch
             )
 
-    def train_epoch(self, model, train_loader, criterion, optimizer, latent_loss = 1.):
+    def train_epoch(self, model, train_loader, criterion, optimizer, latent_loss_weight = 1.):
         model.train()
         total_loss = 0
         total_q_loss = 0
@@ -123,10 +117,10 @@ class AutoencoderTrainer:
 
             data = data.to(self.device)
 
-            output, latent_loss, _ = model(data)
+            output, latent_loss = model(data)
             recon_loss = criterion(output, data)
             latent_loss = latent_loss.mean()
-            loss = recon_loss + latent_loss * latent_loss
+            loss = recon_loss + latent_loss * latent_loss_weight
 
             loss.backward()
             optimizer.step()
@@ -144,7 +138,7 @@ class AutoencoderTrainer:
         with torch.no_grad():
             for data, _ in val_loader:
                 data = data.to(self.device)
-                output, latent_loss, _ = model(data)
+                output, latent_loss = model(data)
                 recon_loss = criterion(output, data)
                 latent_loss = latent_loss.mean()
                 # loss = recon_loss + latent_loss
@@ -157,9 +151,11 @@ class AutoencoderTrainer:
     def objective(self, trial):
         hyperparameters = {
             "learning_rate": trial.suggest_float("learning_rate", 1e-5, 1e-2, log=True),
-            "batch_size": trial.suggest_categorical("batch_size", [32, 64]),
+            "batch_size": trial.suggest_categorical("batch_size", [16, 32, 64]),
             "weight_decay": trial.suggest_float("weight_decay", 1e-7, 1e-3, log=True),
-            "latent_loss": trial.suggest_float("latent_loss", 0.1, 1.0)
+            "h_dim": trial.suggest_categorical("h_dim", [64, 128, 196]),
+            "beta": trial.suggest_float("beta", 0.01, 1.0),
+            "n_embeddings": trial.suggest_categorical("n_embeddings", [64, 128, 256, 512, 1024]),
         }
         
         return self.run(hyperparameters)
@@ -172,9 +168,14 @@ class AutoencoderTrainer:
         experiment.log_code(folder="autoencoder")
         experiment.log_parameters(hyperparameters)
 
+        # h_dim = hyperparameters["h_dim"]
+        # beta = hyperparameters["beta"]
+        # n_embeddings = hyperparameters["n_embeddings"]
+
         model = self.model_class().to(self.device)
         train_loader, val_loader = self.create_dataloaders(hyperparameters["batch_size"])
         criterion = nn.MSELoss()
+        
 
         optimizer = optim.Adam(
             model.parameters(),
@@ -185,12 +186,15 @@ class AutoencoderTrainer:
         best_val_loss = float('inf')
         patience = self.config["patience"]
         patience_counter = 0
-        latent_loss = hyperparameters["latent_loss"]
+
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer)
 
         try:
             for epoch in range(self.config["max_epochs"]):
-                train_loss, train_q_loss = self.train_epoch(model, train_loader, criterion, optimizer, latent_loss)
+                train_loss, train_q_loss = self.train_epoch(model, train_loader, criterion, optimizer)
                 val_loss, val_q_loss = self.validate(model, val_loader, criterion)
+
+                scheduler.step(val_loss)
 
                 experiment.log_metric("train_loss", train_loss, step=epoch)
                 experiment.log_metric("val_loss", val_loss, step=epoch)
@@ -200,7 +204,7 @@ class AutoencoderTrainer:
                 with experiment.test() as test, torch.no_grad() as nograd:
                     for data, _ in val_loader:
                         data = data.to(self.device)
-                        out_data, _, _ = model(data)
+                        out_data, _ = model(data)
                         self.log_images(experiment, data, out_data, epoch)
                         break
 
@@ -243,8 +247,8 @@ class AutoencoderTrainer:
 config = {
     "project_name": "autoencoder",
     "model_save_path": "./autoencoder/models/",
-    "max_epochs": 150,
-    "patience": 15,
+    "max_epochs": 300,
+    "patience": 20,
     "n_trials": 20,
     "timeout": 72000
 }
@@ -253,14 +257,16 @@ if __name__ == "__main__":
     transform = transforms.Compose([
         transforms.Resize((256, 256)),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        # transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
 
     hyperparameters = {
         "learning_rate": 3e-4,
         "batch_size": 32,
         "weight_decay": 0,
-        "latent_loss": 0.25
+        "beta": 0.33,
+        "h_dim": 128,
+        "n_embeddings": 512,
     }
 
     hf_dataset = load_dataset("Artificio/WikiArt_Full", split="train")
@@ -270,4 +276,8 @@ if __name__ == "__main__":
     trainer = AutoencoderTrainer(VQVAE, dataset, config)
     # best_trial = trainer.optimize()
     best_trial = trainer.run(hyperparameters)
+    # trials = []
+    # for hyperparameters in hyperparameter_set:
+    #     trainer.run(hyperparameters)
+    # best_trial = max(trials)
     print("Trial loss:", best_trial)

@@ -7,24 +7,39 @@ from torchvision import models
     
 
 class Encoder(nn.Module):
-    def __init__(self, in_dim=3, h_dim=128, res_h_dim=32, pre_quantizer_dim=32):
-        super(Encoder, self).__init__()
-        self.model = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=4, stride=2, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 196, kernel_size=4, stride=2, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(196, 196, kernel_size=3, padding=1),
-            nn.Conv2d(196, 2, kernel_size=1),
-        )
+    def __init__(self, in_channel, channel, n_res_block, n_res_channel, stride):
+        super().__init__()
 
-    def forward(self, x):
-        return self.model(x)
+        if stride == 4:
+            blocks = [
+                nn.Conv2d(in_channel, channel // 4, 4, stride=2, padding=1),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(channel // 4, channel // 2, 4, stride=2, padding=1),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(channel // 2, channel, 4, stride=2, padding=1),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(channel, channel, 3, padding=1),
+            ]
+
+        elif stride == 2:
+            blocks = [
+                nn.Conv2d(in_channel, channel // 2, 4, stride=2, padding=1),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(channel // 2, channel, 3, padding=1),
+            ]
+
+        for i in range(n_res_block):
+            blocks.append(ResBlock(channel, n_res_channel))
+
+        blocks.append(nn.ReLU(inplace=True))
+
+        self.blocks = nn.Sequential(*blocks)
+
+    def forward(self, input):
+        return self.blocks(input)
 
 
 if __name__ == "__main__":
     from torchinfo import summary
 
-    summary(Encoder(), input_size=(4, 3, 256, 256))
+    summary(Encoder(3, 128, 2, 32, 4), input_size=(4, 3, 256, 256))

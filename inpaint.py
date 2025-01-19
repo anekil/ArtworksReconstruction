@@ -77,7 +77,7 @@ model = GANInpainting()
 
 trainer = Trainer(
         logger=comet_logger,
-        max_epochs=30,
+        max_epochs=50,
         accelerator="gpu",
         devices=1,
         callbacks=[
@@ -87,13 +87,15 @@ trainer = Trainer(
                 mode="min",
                 filename=f"gan-inpainting-{{epoch:02d}}-{{val_loss:.2f}}",
             ),
-            EarlyStopping(monitor="val_loss", patience=20),
+            EarlyStopping(monitor="val_loss", patience=10),
         ],
     )
 
 torch.set_float32_matmul_precision('medium')
 trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 trainer.test(model, dataloaders=test_dataloader)
+
+torch.save(model.state_dict(), 'super_hiper_inpainter.pth')
 
 # config = {
 #     "algorithm": "bayes",

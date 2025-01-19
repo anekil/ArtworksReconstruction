@@ -21,8 +21,8 @@ class InpaintingDataset(torch.utils.data.Dataset):
 
         max_area = int(0.16 * height * width)
         current_area = 0
-        num_shapes = random.randint(8, 12)
-        max_size = min(height, width) // 10
+        num_shapes = random.randint(3, 10)
+        max_size = min(height, width) // 8
 
         while current_area < max_area and num_shapes > 0:
             shape_type = random.choice(["circle", "ellipse", "rectangle"])

@@ -7,14 +7,14 @@ import numpy as np
 
 
 class ResidualBlock(nn.Module):
-    def __init__(self, in_channels):
-        super(ResidualBlock, self).__init__()
+    def __init__(self, channels):
+        super().__init__()
         self.block = nn.Sequential(
-            nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(in_channels),
+            nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False),
+            nn.InstanceNorm2d(channels),
             nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(in_channels)
+            nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False),
+            nn.InstanceNorm2d(channels),
         )
 
     def forward(self, x):
@@ -22,53 +22,50 @@ class ResidualBlock(nn.Module):
 
 
 class Generator(nn.Module):
-    def __init__(self, in_channels=5, out_channels=3, num_residual_blocks=6, features=64):
-        super(Generator, self).__init__()
+    def __init__(self, in_channels=5, out_channels=3, num_residual_blocks=6, base_features=64):
+        super().__init__()
         self.initial = nn.Sequential(
-            nn.Conv2d(in_channels, features, kernel_size=7, padding=3, bias=False),
-            nn.BatchNorm2d(features),
+            nn.Conv2d(in_channels, base_features, kernel_size=7, padding=3, bias=False),
+            nn.InstanceNorm2d(base_features),
             nn.ReLU(inplace=True)
         )
 
-        self.down1 = nn.Sequential(
-            nn.Conv2d(features, features * 2, kernel_size=4, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(features * 2),
-            nn.ReLU(inplace=True)
-        )
-        self.down2 = nn.Sequential(
-            nn.Conv2d(features * 2, features * 4, kernel_size=4, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(features * 4),
+        self.down = nn.Sequential(
+            nn.Conv2d(base_features, base_features * 2, kernel_size=4, stride=2, padding=1, bias=False),
+            nn.InstanceNorm2d(base_features * 2),
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(base_features * 2, base_features * 4, kernel_size=4, stride=2, padding=1, bias=False),
+            nn.InstanceNorm2d(base_features * 4),
             nn.ReLU(inplace=True)
         )
 
-        self.res_blocks = nn.Sequential(
-            *[ResidualBlock(features * 4) for _ in range(num_residual_blocks)]
+        self.residual_blocks = nn.Sequential(
+            *[ResidualBlock(base_features * 4) for _ in range(num_residual_blocks)]
         )
 
-        self.up1 = nn.Sequential(
-            nn.ConvTranspose2d(features * 4, features * 2, kernel_size=4, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(features * 2),
-            nn.ReLU(inplace=True)
-        )
-        self.up2 = nn.Sequential(
-            nn.ConvTranspose2d(features * 2, features, kernel_size=4, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(features),
+        self.up = nn.Sequential(
+            nn.ConvTranspose2d(base_features * 4, base_features * 2, kernel_size=4, stride=2, padding=1, bias=False),
+            nn.InstanceNorm2d(base_features * 2),
+            nn.ReLU(inplace=True),
+
+            nn.ConvTranspose2d(base_features * 2, base_features, kernel_size=4, stride=2, padding=1, bias=False),
+            nn.InstanceNorm2d(base_features),
             nn.ReLU(inplace=True)
         )
 
         self.final = nn.Sequential(
-            nn.Conv2d(features, out_channels, kernel_size=7, padding=3),
+            nn.Conv2d(base_features, out_channels, kernel_size=7, padding=3),
             nn.Sigmoid()
         )
 
     def forward(self, x):
         x = self.initial(x)
-        x = self.down1(x)
-        x = self.down2(x)
-        x = self.res_blocks(x)
-        x = self.up1(x)
-        x = self.up2(x)
+        x = self.down(x)
+        x = self.residual_blocks(x)
+        x = self.up(x)
         return self.final(x)
+
 
 class PatchCritic(nn.Module):
     def __init__(self):

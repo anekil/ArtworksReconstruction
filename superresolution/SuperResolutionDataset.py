@@ -1,5 +1,5 @@
 from torchvision import models, transforms
-from dataloading.WikiArtDataset import WikiArtDataset
+from UNN.dataloading.WikiArtDataset import WikiArtDataset
 
 
 class SuperResolutionDataset(WikiArtDataset):

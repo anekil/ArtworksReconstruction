@@ -84,10 +84,9 @@ class InpaintingDataset(torch.utils.data.Dataset):
             damaged_image = self.to_input(damaged_image)
             mask = self.to_input(mask)
 
-        cluster = torch.ones_like(mask) * row['cluster']
-        damaged_image = torch.cat([damaged_image, mask, cluster], dim=0)
+        damaged_image = torch.cat([damaged_image, mask], dim=0)
 
-        return damaged_image, image
+        return damaged_image, image, row['cluster']
 
     def __len__(self):
         return len(self.df)

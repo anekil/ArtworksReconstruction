@@ -5,6 +5,7 @@ import torch
 import os
 
 from comet_ml import Optimizer
+from datasets import load_dataset
 from pytorch_lightning.loggers import CometLogger
 from torchvision.transforms import v2
 
@@ -13,12 +14,13 @@ import pandas as pd
 from inpainting.InpaintingDataset import *
 from torch.utils.data import DataLoader
 
-df = pd.read_parquet('local_wikiart.parquet', columns=['title', 'artist', 'date', 'genre', 'style', 'image'])
+dataset = load_dataset("Artificio/WikiArt_Full", split="train")
+df = dataset.to_pandas()
 cluster_csv_path = "image_label_dict.csv"
 cluster_df = pd.read_csv(cluster_csv_path)
 cluster_df['idx'] = cluster_df['idx'].astype(int)
 merged_df = df.merge(cluster_df, left_index=True, right_on="idx", how="left")
-df = merged_df[['image', 'cluster']].head(8000)
+df = merged_df[['image', 'cluster']].head(10000)
 
 total_len = len(df)
 train_len = int(0.8 * total_len)
@@ -47,7 +49,7 @@ test_dataloader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_wor
 
 import matplotlib.pyplot as plt
 
-damaged_img, original_img = train_dataset[0]
+damaged_img, original_img, _ = train_dataset[0]
 print(damaged_img.shape)
 mask = damaged_img[3, :, :]
 damaged_img = damaged_img[:3, :, :]
@@ -96,68 +98,3 @@ trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=val_datal
 trainer.test(model, dataloaders=test_dataloader)
 
 torch.save(model.state_dict(), 'super_hiper_inpainter.pth')
-
-# config = {
-#     "algorithm": "bayes",
-#
-#     "parameters": {
-#         "lambda_gp": {"type": "float", "min": 0.1, "max": 50.0},  # Gradient penalty weight
-#         "g_adv_weight": {"type": "float", "min": 0.1, "max": 5.0},  # Adversarial loss weight
-#         "g_rec_weight": {"type": "float", "min": 0.1, "max": 5.0},  # Reconstruction loss weight
-#         "g_perc_weight": {"type": "float", "min": 0.1, "max": 5.0},  # Perceptual loss weight
-#         "g_tex_weight": {"type": "float", "min": 0.1, "max": 5.0},  # Texture loss weight
-#         "g_div_weight": {"type": "float", "min": 0.1, "max": 5.0},  # Diversity loss weight
-#     },
-#
-#     "spec": {
-#         "metric": "val_loss",
-#         "objective": "minimize",
-#     },
-# }
-
-# optimizer = Optimizer(config)
-#
-# for experiment in optimizer.get_experiments(project_name="gan-inpainting"):
-#     hyperparams = {
-#         "lambda_gp": experiment.get_parameter("lambda_gp"),
-#         "g_adv_weight": experiment.get_parameter("g_adv_weight"),
-#         "g_rec_weight": experiment.get_parameter("g_rec_weight"),
-#         "g_perc_weight": experiment.get_parameter("g_perc_weight"),
-#         "g_tex_weight": experiment.get_parameter("g_tex_weight"),
-#         "g_div_weight": experiment.get_parameter("g_div_weight"),
-#     }
-#
-#     model = GANInpainting(**hyperparams)
-#
-#     experiment.set_name(f"gan-inpainting-{experiment.id}")
-#     trainer = Trainer(
-#         logger=comet_logger,
-#         max_epochs=50,
-#         accelerator="gpu",
-#         devices=1,
-#         callbacks=[
-#             ModelCheckpoint(
-#                 monitor="val_loss",
-#                 save_top_k=1,
-#                 mode="min",
-#                 filename=f"gan-inpainting-{experiment.id}-{{epoch:02d}}-{{val_loss:.2f}}",
-#             ),
-#             EarlyStopping(monitor="val_loss", patience=20),
-#         ],
-#     )
-#
-#     torch.set_float32_matmul_precision('medium')
-#     experiment.set_name(f"gan-inpainting-{experiment.id}")
-#     trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
-#     experiment.log_metric("val_loss", trainer.callback_metrics["val_loss"].item())
-#     trainer.test(model, dataloaders=test_dataloader)
-#     experiment.end()
-
-# damaged_img, original_img = train_dataset[0]
-# damaged_img = damaged_img.unsqueeze(0)
-#
-# model.eval()
-# reconstructed = model(damaged_img)
-# reconstructed_img = reconstructed.detach().squeeze()
-# plt.imshow(reconstructed_img.permute(1, 2, 0))
-# plt.show()

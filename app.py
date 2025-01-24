@@ -1,78 +1,76 @@
 import streamlit as st
-import datasets as ds
-from random import randint
-import numpy as np
-from PIL import Image
-from streamlit_image_comparison import image_comparison
+
+from app.models import ReconstructionModule
+# from app.models import ReconstructionModule
+from app.utils import *
+
+st.set_page_config(
+    page_title="Artworks Reconstructions",
+    page_icon="🎨",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 '# :rainbow[Artworks Reconstructions]'
-
-@st.cache_resource
-def load_wikiart():
-    dataset = ds.load_dataset("parquet", data_files={'train': "local_wikiart.parquet"})
-    dataset = dataset.cast_column("image", ds.Image(mode="RGB"))
-    return dataset['train']
-
+'Use Neural Networks to restore paintings to their former glory'
 
 with st.spinner('Loading dataset'):
-    df = load_wikiart()
+    dataset = load_wikiart()
+    damaged_images = apply_damage_to_dataset(dataset)
 
 if "rn" not in st.session_state:
-    st.session_state["rn"] = randint(0,len(df))
+    st.session_state["rn"] = 0
 
-def roll_artwork(number=None):
-    st.session_state["rn"] = randint(0,len(df))
+artwork = get_artwork(damaged_images)
 
-def choose_artwork():
-    st.session_state["rn"] = st.session_state['chosen_artwork']
+reconstruction_module = ReconstructionModule()
 
-def apply_damage(image):
-    img = np.array(image)
-    height, width, _ = img.shape
-    mask_size = int(min(height, width) // 4)
-    top_left_x = randint(0, width - mask_size)
-    top_left_y = randint(0, height - mask_size)
-    img[top_left_y:top_left_y + mask_size, top_left_x:top_left_x + mask_size] = [255, 255, 255]
-    return Image.fromarray(img)
+st.write(artwork.shape)
+st.image(artwork)
 
-def show_artwork_details(artwork):
-    with st.expander('Artwork Details', expanded=True):
-        f'## {artwork["title"]}'
-        f'*{artwork["artist"]}, {artwork["date"] if artwork["date"] != "None" else "Unknown"}*'
-        col1, col2 = st.columns(2)
-        with col1:
-            f'Style: :rainbow-background[{artwork["style"].capitalize()}]'
-        with col2:
-            f'Genre: :rainbow-background[{artwork["genre"].capitalize()}]'
+inpainted = reconstruction_module.inpainting(artwork)
+st.write(inpainted.shape)
+st.image(inpainted)
 
+super_artwork = reconstruction_module.resolution(inpainted)
+st.write(super_artwork.shape)
+st.image(super_artwork)
 
-with st.container(border=True):
-    col1, col2 = st.columns(2, vertical_alignment='center')
-    with col1:
-        st.slider("Choose image", min_value=0, max_value=len(df),
-              value=st.session_state.rn, key='chosen_artwork', on_change=choose_artwork)
-    with col2:
-        st.button("🎨Show random artwork", on_click=roll_artwork)
-    is_damaged = st.checkbox('💥 Show damaged artwork')
-    if is_damaged:
-        is_inpainted = st.checkbox('🖌️ Inpaint')
+# def show_artwork_details():
+#     artwork = dataset[st.session_state.rn]
+#     with st.expander('Artwork Details', expanded=True):
+#         f'## {artwork["title"]}'
+#         f'*{artwork["artist"]}, {artwork["date"] if artwork["date"] != "None" else "Unknown"}*'
+#         col1, col2 = st.columns(2)
+#         with col1:
+#             f'Style: :rainbow-background[{artwork["style"].capitalize()}]'
+#         with col2:
+#             f'Genre: :rainbow-background[{artwork["genre"].capitalize()}]'
 
-artwork = df[st.session_state.rn]
-image = artwork['image']
+# with st.sidebar.container(border=True):
+#     col1, col2 = st.columns(2, vertical_alignment='center')
+#     with col1:
+#         st.number_input("Choose image", min_value=0, max_value=len(damaged_images),
+#               value=st.session_state.rn, key='chosen_artwork', on_change=choose_artwork)
+#     with col2:
+#         st.button("🎨 Show random artwork", on_click=roll_artwork)
+#
+# artwork = get_artwork(damaged_images)
+#
+# is_inpainted = st.checkbox('🖌️ Inpaint')
+# is_super = st.checkbox('🪄 Superresolution')
+#
+# if is_inpainted:
+#     image_comparison(
+#         img1=artwork,
+#         label1="Damaged artwork",
+#         img2=artwork,
+#         label2="Reconstructed artwork",
+#         width=700
+#     )
+# else:
+#     st.image(artwork, width=700)
 
-if is_damaged:
-    show_artwork_details(artwork)
-    damaged = apply_damage(image)
-    if is_inpainted:
-        image_comparison(
-            img1=damaged,
-            label1="Damaged artwork",
-            img2=image,
-            label2="Reconstructed artwork",
-            width=700
-        )
-    else:
-        st.image(damaged, width=700)
-else:
-    show_artwork_details(artwork)
-    st.image(image, width=700)
+# show_artwork_details()
+
+# in another tab show other images from category

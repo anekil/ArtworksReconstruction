@@ -43,7 +43,7 @@ class PerceptualLoss(nn.Module):
         return sum(F.l1_loss(p, t) for p, t in zip(pred_features, target_features))
 
 
-class ResNet50Autoencoder(nn.Module):
+class SuperResAutoencoder(nn.Module):
     def __init__(self):
         super().__init__()
         self.encoder = nn.Sequential(
@@ -53,7 +53,7 @@ class ResNet50Autoencoder(nn.Module):
             nn.Conv2d(64, 64, kernel_size=3, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.MaxPool2d(kernel_size=2, stride=2),  # Redukcja rozmiaru o 2x
             nn.Dropout(0.3),
             nn.Conv2d(64, 128, kernel_size=3, padding=1),
             nn.BatchNorm2d(128),
@@ -61,12 +61,13 @@ class ResNet50Autoencoder(nn.Module):
             nn.Conv2d(128, 128, kernel_size=3, padding=1),
             nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.MaxPool2d(kernel_size=2, stride=2),  # Kolejna redukcja rozmiaru o 2x
             nn.Dropout(0.3),
             nn.Conv2d(128, 256, kernel_size=3, padding=1),
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
         )
+
         self.decoder = nn.Sequential(
             nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True),
             nn.Conv2d(256, 128, kernel_size=3, padding=1),
@@ -79,6 +80,10 @@ class ResNet50Autoencoder(nn.Module):
             nn.Conv2d(128, 64, kernel_size=3, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True),
             nn.Conv2d(64, 64, kernel_size=3, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
@@ -95,7 +100,7 @@ class SuperResolutionLightningModule(pl.LightningModule):
     def __init__(self, config, dataset):
         super().__init__()
         self.save_hyperparameters(config)
-        self.model = ResNet50Autoencoder()
+        self.model = SuperResAutoencoder()
         self.perceptual_loss = PerceptualLoss(SharedFeaturesExtractor())
         self.mse_loss = nn.MSELoss()
         self.dataset = dataset
@@ -139,13 +144,18 @@ class SuperResolutionLightningModule(pl.LightningModule):
             self.log_images(low_res, outputs, high_res, epoch=self.current_epoch, batch_idx=batch_idx, stage="test")
 
     def log_images(self, low_res, outputs, high_res, epoch, batch_idx, stage):
-        triplets = torch.cat([low_res, outputs, high_res], dim=-1)
+        low_res_upsampled = torch.nn.functional.interpolate(low_res, size=high_res.shape[-2:], mode="bilinear", align_corners=False)
+        triplets = torch.cat([low_res_upsampled, outputs, high_res], dim=-1)
         grid = vutils.make_grid(triplets, nrow=1, normalize=True, value_range=(0, 1))
         grid_np = grid.permute(1, 2, 0).cpu().numpy()
         filename = f"superres_{stage}_epoch_{str(epoch).zfill(3)}_batch_{batch_idx}.png"
         plt.imsave(filename, grid_np)
         self.logger.experiment.log_image(filename, name=filename)
         print(f"Logged image: {filename}")
+        input_res = f"Input(LR upsampled): {low_res.shape[-2]}x{low_res.shape[-1]}"
+        output_res = f"Output(SR): {outputs.shape[-2]}x{outputs.shape[-1]}"
+        target_res = f"Target(HR): {high_res.shape[-2]}x{high_res.shape[-1]}"
+        self.logger.experiment.log_text(f"{input_res}, {output_res}, {target_res}", step=epoch)
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.hparams.learning_rate)
@@ -168,11 +178,11 @@ class SuperResolutionLightningModule(pl.LightningModule):
         )
 
     def train_dataloader(self):
-        return DataLoader(self.train_dataset, batch_size=self.hparams.batch_size, shuffle=True, num_workers=4)
+        return DataLoader(self.train_dataset, batch_size=self.hparams.batch_size, shuffle=True, num_workers=10)
 
     def val_dataloader(self):
-        return DataLoader(self.val_dataset, batch_size=self.hparams.batch_size, shuffle=False, num_workers=4)
+        return DataLoader(self.val_dataset, batch_size=self.hparams.batch_size, shuffle=False, num_workers=10)
 
     def test_dataloader(self):
-        return DataLoader(self.test_dataset, batch_size=self.hparams.batch_size, shuffle=False, num_workers=4)
+        return DataLoader(self.test_dataset, batch_size=self.hparams.batch_size, shuffle=False, num_workers=10)
 

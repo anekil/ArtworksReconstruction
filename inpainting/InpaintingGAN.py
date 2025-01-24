@@ -4,7 +4,7 @@ import pytorch_lightning as pl
 import torch.nn.functional as F
 import torchvision
 import numpy as np
-
+from einops import repeat
 
 class ResidualBlock(nn.Module):
     def __init__(self, channels):
@@ -22,10 +22,13 @@ class ResidualBlock(nn.Module):
 
 
 class Generator(nn.Module):
-    def __init__(self, in_channels=5, out_channels=3, num_residual_blocks=2, base_features=64):
+    def __init__(self, in_channels=4, out_channels=3, num_residual_blocks=2, base_features=64, n_clusters=17, cluster_dim=16):
         super().__init__()
+
+        self.cluster_embedding = nn.Embedding(n_clusters, cluster_dim)
+
         self.initial = nn.Sequential(
-            nn.Conv2d(in_channels, base_features, kernel_size=7, padding=3, bias=False),
+            nn.Conv2d(in_channels + cluster_dim, base_features, kernel_size=7, padding=3, bias=False),
             nn.InstanceNorm2d(base_features),
             nn.ReLU(inplace=True)
         )
@@ -59,7 +62,12 @@ class Generator(nn.Module):
             nn.Sigmoid()
         )
 
-    def forward(self, x):
+    def forward(self, x, cluster_label):
+        cluster_emb = self.cluster_embedding(cluster_label)
+        cluster_emb = repeat(cluster_emb, "b c -> b c h w", h=x.size(2), w=x.size(3))
+
+        x = torch.cat([x, cluster_emb], dim=1)
+
         x = self.initial(x)
         x = self.down(x)
         x = self.residual_blocks(x)
@@ -181,19 +189,19 @@ class GANInpainting(pl.LightningModule):
         self.g_tex_weight = g_tex_weight
         self.g_div_weight = g_div_weight
 
-    def forward(self, damaged_image):
-        return self.generator(damaged_image)
+    def forward(self, damaged_image, cluster_id):
+        return self.generator(damaged_image, cluster_id)
 
     def training_step(self, batch, batch_idx):
         g_opt, c_opt = self.optimizers()
-        damaged_image, original_image = batch
+        damaged_image, original_image, cluster_id = batch
 
         # -----------------------
         # Train Critique
         # -----------------------
         for _ in range(self.n_critic):
             real_preds = self.critique(original_image)
-            fake_images = self(damaged_image).detach()
+            fake_images = self(damaged_image, cluster_id).detach()
             fake_preds = self.critique(fake_images)
             c_loss = torch.mean(fake_preds) - torch.mean(real_preds)
             gp = self.gradient_penalty(original_image, fake_images)
@@ -207,7 +215,7 @@ class GANInpainting(pl.LightningModule):
         # -----------------------
         # Train Generator
         # -----------------------
-        inpainted_image = self(damaged_image)
+        inpainted_image = self(damaged_image, cluster_id)
         fake_preds = self.critique(inpainted_image)
         g_adv_loss = -torch.mean(fake_preds)
         g_perc_loss = self.perceptual_loss(inpainted_image, original_image)
@@ -261,8 +269,8 @@ class GANInpainting(pl.LightningModule):
         return gp
 
     def validation_step(self, batch, batch_idx):
-        damaged_image, original_image = batch
-        inpainted_image = self(damaged_image)
+        damaged_image, original_image, cluster_id = batch
+        inpainted_image = self(damaged_image, cluster_id)
 
         g_rec_loss = self.reconstruction_loss(inpainted_image, original_image)
         self.log("val_loss", g_rec_loss, on_step=False, on_epoch=True, prog_bar=True)
@@ -274,8 +282,8 @@ class GANInpainting(pl.LightningModule):
         return g_rec_loss
 
     def test_step(self, batch, batch_idx):
-        damaged_image, original_image = batch
-        inpainted_image = self(damaged_image)
+        damaged_image, original_image, cluster_id = batch
+        inpainted_image = self(damaged_image, cluster_id)
 
         self.log("test_loss", self.reconstruction_loss(inpainted_image, original_image))
         if batch_idx == 0:

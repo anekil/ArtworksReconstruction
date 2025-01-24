@@ -185,4 +185,3 @@ class SuperResolutionLightningModule(pl.LightningModule):
 
     def test_dataloader(self):
         return DataLoader(self.test_dataset, batch_size=self.hparams.batch_size, shuffle=False, num_workers=10)
-

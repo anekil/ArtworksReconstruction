@@ -1,7 +1,5 @@
 import streamlit as st
-
 from app.models import ReconstructionModule
-# from app.models import ReconstructionModule
 from app.utils import *
 
 st.set_page_config(
@@ -16,25 +14,20 @@ st.set_page_config(
 
 with st.spinner('Loading dataset'):
     dataset = load_wikiart()
-    damaged_images = apply_damage_to_dataset(dataset)
+    wikiart_dataset = WikiArtDataset(dataset)
 
 if "rn" not in st.session_state:
     st.session_state["rn"] = 0
 
-artwork = get_artwork(damaged_images)
-
 reconstruction_module = ReconstructionModule()
-
-st.write(artwork.shape)
-st.image(artwork)
+artwork = get_artwork(wikiart_dataset)
+st.image(artwork.image)
 
 inpainted = reconstruction_module.inpainting(artwork)
-st.write(inpainted.shape)
-st.image(inpainted)
+st.image(inpainted.image)
 
 super_artwork = reconstruction_module.resolution(inpainted)
-st.write(super_artwork.shape)
-st.image(super_artwork)
+st.image(super_artwork.image)
 
 # def show_artwork_details():
 #     artwork = dataset[st.session_state.rn]
@@ -74,3 +67,4 @@ st.image(super_artwork)
 # show_artwork_details()
 
 # in another tab show other images from category
+# choosing images from gallery

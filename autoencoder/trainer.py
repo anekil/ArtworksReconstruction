@@ -1,4 +1,4 @@
-from comet_ml import Experiment
+import comet_ml
 from comet_ml.integration.pytorch import log_model
 import torch
 import torch.nn as nn
@@ -13,7 +13,7 @@ from PIL import Image
 import io
 from torch.utils.data import Dataset
 
-from autoencoder import ResNet50Autoencoder
+from vqvae import VQVAE
 
 
 class ImageDataset(Dataset):
@@ -51,6 +51,8 @@ class AutoencoderTrainer:
         self.config = config
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+        print(self.device)
+
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
 
@@ -79,98 +81,101 @@ class AutoencoderTrainer:
 
         return train_loader, val_loader
 
-def log_images(self, experiment, original_images, reconstructed_images, epoch, prefix="train"):
-    mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1).to(self.device)
-    std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1).to(self.device)
-    
-    def denormalize(images):
-        return images * std + mean
-    
-    num_images = min(5, original_images.size(0))
-    indices = torch.randperm(original_images.size(0))[:num_images]
-    
-    for idx in range(num_images):
-        i = indices[idx]
-        original = denormalize(original_images[i]).cpu().numpy()
-        reconstructed = denormalize(reconstructed_images[i]).cpu().numpy()
+    def log_images(self, experiment, original_images, reconstructed_images, epoch, prefix="train"):
+        num_images = min(10, original_images.size(0))
+        indices = torch.randperm(original_images.size(0))[:num_images]
         
-        original = np.transpose(original, (1, 2, 0)).clip(0, 1)
-        reconstructed = np.transpose(reconstructed, (1, 2, 0)).clip(0, 1)
-        
-        height, width = original.shape[:2]
-        
-        combined_image = np.zeros((height, width * 2, 3))
-        combined_image[:, :width] = original
-        combined_image[:, width:] = reconstructed
-        
-        experiment.log_image(
-            combined_image * 255,
-            name=f"{prefix}_comparison_{idx}",
-            step=epoch
-        )
+        for idx in range(num_images):
+            i = indices[idx]
+            original = original_images[i].cpu().numpy()
+            reconstructed = reconstructed_images[i].cpu().numpy()
+            
+            # Transpose from CHW to HWC format
+            original = np.transpose(original, (1, 2, 0)).clip(0, 1)
+            reconstructed = np.transpose(reconstructed, (1, 2, 0)).clip(0, 1)
+            
+            height, width = original.shape[:2]
+            combined_image = np.zeros((height, width * 2, 3))
+            combined_image[:, :width] = original
+            combined_image[:, width:] = reconstructed
+            
+            experiment.log_image(
+                combined_image * 255,  # Scale back to [0,255] for visualization
+                name=f"{prefix}_comparison_{idx}",
+                step=epoch
+            )
 
-    def train_epoch(self, model, train_loader, criterion, optimizer, experiment):
+    def train_epoch(self, model, train_loader, criterion, optimizer, latent_loss_weight = 1.):
         model.train()
         total_loss = 0
+        total_q_loss = 0
+
+        # latent_loss_weight = 0.25
     
         for batch_idx, (data, _) in enumerate(train_loader):
-            data = data.to(self.device)
             optimizer.zero_grad()
 
-            output = model(data)
-            loss = criterion(output, data)
+            data = data.to(self.device)
+
+            output, latent_loss = model(data)
+            recon_loss = criterion(output, data)
+            latent_loss = latent_loss.mean()
+            loss = recon_loss + latent_loss * latent_loss_weight
 
             loss.backward()
             optimizer.step()
 
-            total_loss += loss.item()
+            total_loss += recon_loss.item()
+            total_q_loss += latent_loss.item()
             
-        return total_loss / len(train_loader)
+        return total_loss / len(train_loader), total_q_loss / len(train_loader)
 
     def validate(self, model, val_loader, criterion):
         model.eval()
         total_loss = 0
+        total_q_loss = 0
 
         with torch.no_grad():
             for data, _ in val_loader:
                 data = data.to(self.device)
-                output = model(data)
-                loss = criterion(output, data)
-                total_loss += loss.item()
+                output, latent_loss = model(data)
+                recon_loss = criterion(output, data)
+                latent_loss = latent_loss.mean()
+                # loss = recon_loss + latent_loss
 
-        return total_loss / len(val_loader)
+                total_loss += recon_loss.item()
+                total_q_loss += latent_loss.item()
+
+        return total_loss / len(val_loader), total_q_loss / len(val_loader)
 
     def objective(self, trial):
-        experiment = Experiment(
-            api_key=self.config["comet_api_key"],
+        hyperparameters = {
+            "learning_rate": trial.suggest_float("learning_rate", 1e-5, 1e-2, log=True),
+            "batch_size": trial.suggest_categorical("batch_size", [16, 32, 64]),
+            "weight_decay": trial.suggest_float("weight_decay", 1e-7, 1e-3, log=True),
+            "h_dim": trial.suggest_categorical("h_dim", [64, 128, 196]),
+            "beta": trial.suggest_float("beta", 0.01, 1.0),
+            "n_embeddings": trial.suggest_categorical("n_embeddings", [64, 128, 256, 512, 1024]),
+        }
+        
+        return self.run(hyperparameters)
+
+    def run(self, hyperparameters):
+        experiment = comet_ml.Experiment(
             project_name=self.config["project_name"]
         )
 
         experiment.log_code(folder="autoencoder")
-
-        hyperparameters = {
-            "latent_dim": trial.suggest_categorical("latent_dim", [128, 192, 256, 384, 512]),
-            "learning_rate": trial.suggest_float("learning_rate", 1e-5, 1e-2, log=True),
-            "batch_size": trial.suggest_categorical("batch_size", [16, 32, 64, 128]),
-            "weight_decay": trial.suggest_float("weight_decay", 1e-5, 1e-3, log=True),
-            "freeze_percentage": trial.suggest_float("freeze_percentage", 0.5, 0.9),
-            "dropout_rate": trial.suggest_float("dropout_rate", 0.1, 0.5),
-            "loss_function": trial.suggest_categorical("loss_function", ["mse", "l1"])
-        }
         experiment.log_parameters(hyperparameters)
 
-        model = self.model_class(
-            latent_dim=hyperparameters["latent_dim"],
-            freeze_percentage=hyperparameters["freeze_percentage"]
-        ).to(self.device)
+        # h_dim = hyperparameters["h_dim"]
+        # beta = hyperparameters["beta"]
+        # n_embeddings = hyperparameters["n_embeddings"]
 
-        for m in model.modules():
-            if isinstance(m, nn.Dropout):
-                m.p = hyperparameters["dropout_rate"]
-
+        model = self.model_class().to(self.device)
         train_loader, val_loader = self.create_dataloaders(hyperparameters["batch_size"])
+        criterion = nn.MSELoss()
         
-        criterion = nn.MSELoss() if hyperparameters["loss_function"] == "mse" else nn.L1Loss()
 
         optimizer = optim.Adam(
             model.parameters(),
@@ -181,34 +186,44 @@ def log_images(self, experiment, original_images, reconstructed_images, epoch, p
         best_val_loss = float('inf')
         patience = self.config["patience"]
         patience_counter = 0
-        
-        for epoch in range(self.config["max_epochs"]):
-            train_loss = self.train_epoch(model, train_loader, criterion, optimizer, experiment)
-            val_loss = self.validate(model, val_loader, criterion)
 
-            experiment.log_metric("train_loss", train_loss, step=epoch)
-            experiment.log_metric("val_loss", val_loss, step=epoch)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer)
 
-            with experiment.test() as test, torch.no_grad() as nograd:
-                for data, _ in val_loader:
-                    data = data.to(self.device)
-                    out_data = model(data)
-                    self.log_images(experiment, data, out_data, epoch)
+        try:
+            for epoch in range(self.config["max_epochs"]):
+                train_loss, train_q_loss = self.train_epoch(model, train_loader, criterion, optimizer)
+                val_loss, val_q_loss = self.validate(model, val_loader, criterion)
+
+                scheduler.step(val_loss)
+
+                experiment.log_metric("train_loss", train_loss, step=epoch)
+                experiment.log_metric("val_loss", val_loss, step=epoch)
+                experiment.log_metric("train_q_loss", train_q_loss, step=epoch)
+                experiment.log_metric("val_q_loss", val_q_loss, step=epoch)
+
+                with experiment.test() as test, torch.no_grad() as nograd:
+                    for data, _ in val_loader:
+                        data = data.to(self.device)
+                        out_data, _ = model(data)
+                        self.log_images(experiment, data, out_data, epoch)
+                        break
+
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    patience_counter = 0
+                    torch.save(model.state_dict(), f"{self.config['model_save_path']}/best_model.pth")
+                else:
+                    patience_counter += 1
+                    
+                if patience_counter >= patience:
+                    self.logger.info(f"Early stopping triggered at epoch {epoch}")
                     break
 
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                patience_counter = 0
+                self.logger.info(f"Epoch {epoch}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}")
 
-                torch.save(model.state_dict(), f"{self.config['model_save_path']}/best_model.pth")
-            else:
-                patience_counter += 1
-                
-            if patience_counter >= patience:
-                self.logger.info(f"Early stopping triggered at epoch {epoch}")
-                break
-
-            self.logger.info(f"Epoch {epoch}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}")
+        except KeyboardInterrupt:
+            print("Experiment interrupted")
+            pass
 
         log_model(experiment, model, model_name="AutoEncoder")
         experiment.log_metric("best_val_loss", best_val_loss)
@@ -224,33 +239,45 @@ def log_images(self, experiment, original_images, reconstructed_images, epoch, p
         
         study.optimize(
             self.objective,
-            n_trials=self.config["n_trials"],
-            timeout=self.config["timeout"],
+            n_trials=self.config["n_trials"]
         )
         
         return study.best_trial
 
 config = {
-    "comet_api_key": "oCeR8CKfuIxFIvfKv4N0B9mpV",
     "project_name": "autoencoder",
-    "model_save_path": "./models",
-    "max_epochs": 100,
-    "patience": 10,
-    "n_trials": 50,
+    "model_save_path": "./autoencoder/models/",
+    "max_epochs": 300,
+    "patience": 20,
+    "n_trials": 20,
     "timeout": 72000
 }
 
 if __name__ == "__main__":
     transform = transforms.Compose([
-        transforms.Resize((224, 224)),
+        transforms.Resize((256, 256)),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        # transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
+
+    hyperparameters = {
+        "learning_rate": 3e-4,
+        "batch_size": 32,
+        "weight_decay": 0,
+        "beta": 0.33,
+        "h_dim": 128,
+        "n_embeddings": 512,
+    }
 
     hf_dataset = load_dataset("Artificio/WikiArt_Full", split="train")
 
     dataset = ImageDataset(hf_dataset, transform)
     
-    trainer = AutoencoderTrainer(ResNet50Autoencoder, dataset, config)
-    best_trial = trainer.optimize()
-    print("Best trial:", best_trial)
+    trainer = AutoencoderTrainer(VQVAE, dataset, config)
+    # best_trial = trainer.optimize()
+    best_trial = trainer.run(hyperparameters)
+    # trials = []
+    # for hyperparameters in hyperparameter_set:
+    #     trainer.run(hyperparameters)
+    # best_trial = max(trials)
+    print("Trial loss:", best_trial)

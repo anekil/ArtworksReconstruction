@@ -20,16 +20,6 @@ with st.spinner('Loading dataset'):
 if "rn" not in st.session_state:
     st.session_state["rn"] = 0
 
-reconstruction_module = ReconstructionModule()
-artwork = get_artwork(wikiart_dataset)
-st.image(artwork.image)
-
-inpainted = reconstruction_module.inpainting(artwork)
-st.image(inpainted.image)
-
-super_artwork = reconstruction_module.resolution(inpainted)
-st.image(super_artwork.image)
-
 def show_artwork_details(artwork : Artwork):
     with st.expander('Artwork Details', expanded=True):
         f'## {artwork.title}'
@@ -51,16 +41,20 @@ with st.sidebar.container(border=True):
 is_inpainted = st.checkbox('🖌️ Inpaint')
 is_super = st.checkbox('🪄 Superresolution')
 
-if is_inpainted:
+reconstruction_module = ReconstructionModule()
+artwork = get_artwork(wikiart_dataset)
+artwork = reconstruction_module.pipeline(artwork, is_inpainted=is_inpainted, is_super=is_super)
+
+if is_inpainted or is_super:
+    img1, img2 = align_dimensions(artwork.image, artwork.result)
     image_comparison(
-        img1=artwork.image,
+        img1=img1,
         label1="Damaged artwork",
-        img2=super_artwork.image,
+        img2=img2,
         label2="Reconstructed artwork",
-        # width=700
     )
 else:
-    st.image(artwork.image)#, width=700)
+    st.image(artwork.image)
 
 show_artwork_details(artwork)
 

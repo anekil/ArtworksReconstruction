@@ -9,16 +9,15 @@ from torchvision.transforms import v2
 
 
 class Artwork:
-    def __init__(self, image, mask, cluster_id: int, title: str, artist: str, date: str, style: str, genre: str):
-        self.original = image
+    def __init__(self, image, mask, title: str, artist: str, date: str, style: str, genre: str):
         self.image = image
         self.mask = mask
-        self.cluster_id = cluster_id
         self.title = title
         self.artist = artist
         self.date = date
         self.style = style
         self.genre = genre
+        self.result = None
 
 
 @st.cache_resource
@@ -27,7 +26,7 @@ def load_wikiart():
     return ds
 
 def get_artwork(data):
-    return data[st.session_state.rn]
+    return data[st.session_state["rn"]]
 
 class WikiArtDataset(Dataset):
     def __init__(self, dataset):
@@ -41,8 +40,6 @@ class WikiArtDataset(Dataset):
 
         transform = v2.Compose([
             v2.Resize((224, 224)),
-            v2.ToTensor(),
-            v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
 
         image = transform(image)
@@ -51,8 +48,6 @@ class WikiArtDataset(Dataset):
         artwork = Artwork(
             image=image,
             mask=mask,
-            cluster_id=1,
-
             title=self.dataset[idx]["title"],
             artist=self.dataset[idx]["artist"],
             date=self.dataset[idx]["date"],
@@ -114,3 +109,13 @@ def roll_artwork(data_len=10):
 
 def choose_artwork():
     st.session_state["rn"] = st.session_state['chosen_artwork']
+
+def align_dimensions(image1, image2):
+    image1 = np.array(image1)
+    image2 = np.array(image2)
+
+    height, width = max(image1.shape[:2], image2.shape[:2])
+    image1 = cv2.resize(image1, (width, height))
+    image2 = cv2.resize(image2, (width, height))
+
+    return image1, image2

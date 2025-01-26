@@ -79,7 +79,7 @@ model = GANInpainting()
 
 trainer = Trainer(
         logger=comet_logger,
-        max_epochs=50,
+        max_epochs=100,
         accelerator="gpu",
         devices=1,
         callbacks=[
@@ -91,10 +91,12 @@ trainer = Trainer(
             ),
             EarlyStopping(monitor="val_loss", patience=10),
         ],
+        default_root_dir="inpaint_checkpoints"
     )
 
 torch.set_float32_matmul_precision('medium')
 trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 trainer.test(model, dataloaders=test_dataloader)
 
-torch.save(model.state_dict(), 'super_hiper_inpainter.pth')
+torch.save(model.generator.state_dict(), 'app/models/super_hiper_inpainter_state_dict.pth')
+torch.save(model.generator, 'app/models/super_hiper_inpainter_full.pth')

@@ -2,7 +2,7 @@ import torch
 from torchvision.transforms import v2
 
 from app.utils import Artwork
-from inpainting.InpaintingGAN import GANInpainting
+from inpainting.InpaintingGAN import Generator
 from superresolution.SuperResolutionTrainer import SuperResAutoencoder
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -20,8 +20,7 @@ class ReconstructionModule:
         # path = "models/super_hiper_resolutioner.pth"
         path = "/home/aneta/Documents/UNN/app/models/super_hiper_resolutioner.pth"
         model = SuperResAutoencoder()
-        torch_path = torch.load(path, weights_only=True)
-        model.load_state_dict(torch_path)
+        model.load_state_dict(torch.load(path, weights_only=True))
         model = model.to(device)
         model.eval()
         return model
@@ -36,10 +35,10 @@ class ReconstructionModule:
 
     def load_inpainting_model(self):
         # path = "models/super_hiper_inpainter.pth"
-        path = "/home/aneta/Documents/UNN/app/models/super_hiper_inpainter.pth"
-        model = GANInpainting()
+        path = "/home/aneta/Documents/UNN/app/models/super_hiper_inpainter_state_dict.pth"
+        model = Generator()
         model.load_state_dict(torch.load(path, weights_only=True))
-        model = model.generator.to(device)
+        model = model.to(device)
         model.eval()
         return model
 

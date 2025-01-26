@@ -1,6 +1,6 @@
 from PIL import Image
-from torchvision import models, transforms
-from UNN.dataloading.WikiArtDataset import WikiArtDataset
+from torchvision import transforms
+from dataloading.WikiArtDataset import WikiArtDataset
 
 
 class SuperResolutionDataset(WikiArtDataset):

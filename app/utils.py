@@ -10,6 +10,7 @@ from torchvision.transforms import v2
 
 class Artwork:
     def __init__(self, image, mask, cluster_id: int, title: str, artist: str, date: str, style: str, genre: str):
+        self.original = image
         self.image = image
         self.mask = mask
         self.cluster_id = cluster_id
@@ -40,6 +41,8 @@ class WikiArtDataset(Dataset):
 
         transform = v2.Compose([
             v2.Resize((224, 224)),
+            v2.ToTensor(),
+            v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
 
         image = transform(image)
@@ -105,3 +108,9 @@ class WikiArtDataset(Dataset):
         img[mask == 0] = [255, 255, 255]
         mask = mask * 255
         return Image.fromarray(img), Image.fromarray(mask)
+
+def roll_artwork(data_len=10):
+    st.session_state["rn"] = random.randint(0, data_len)
+
+def choose_artwork():
+    st.session_state["rn"] = st.session_state['chosen_artwork']

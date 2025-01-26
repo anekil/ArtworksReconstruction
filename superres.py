@@ -28,7 +28,7 @@ transform = v2.Compose([
 ])
 
 
-folder_path = "/WikiArt_000/"
+folder_path = "WikiArt_000/"
 image_paths = [os.path.join(folder_path, file) for file in os.listdir(folder_path) if file.endswith(".jpg")]
 filtered_paths = []
 
@@ -74,4 +74,25 @@ trainer = pl.Trainer(
 torch.set_float32_matmul_precision('medium')
 trainer.fit(model)
 trainer.test(model)
-torch.save(model.model.state_dict(), 'super_hiper_resolutioner.pth')
+torch.save(model.model.state_dict(), 'app/models/super_hiper_resolutioner_state_dict.pth')
+torch.save(model.model, 'app/models/super_hiper_resolutioner_full.pth')
+
+device = 'cuda'
+model = model.model.to(device)
+
+for j in range(10):
+    low_res_upsampled, image = dataset[j]
+    input_tensor = low_res_upsampled.unsqueeze(0).to(device)
+
+    for i in range(3):
+        with torch.no_grad():
+            output = model(input_tensor)
+        input_tensor = output
+        output_image = output.squeeze(0).cpu().permute(1, 2, 0).numpy()
+        plt.imshow(output_image)
+        plt.title(f'{i+1} iteration')
+        plt.show()
+
+    plt.imshow(image.cpu().permute(1, 2, 0).numpy())
+    plt.title('original image')
+    plt.show()

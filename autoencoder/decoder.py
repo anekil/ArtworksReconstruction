@@ -2,7 +2,7 @@
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from autoencoder.residual import ResBlock
+from residual import ResBlock
 
 
 class Decoder(nn.Module):

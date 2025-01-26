@@ -1,9 +1,9 @@
 import pickle
 from pathlib import Path
 
-import streamlit
+import numpy as np
 import torch
-from PIL.Image import Image
+from PIL import Image as Img
 from torchvision.transforms import v2
 
 from app.utils import Artwork
@@ -16,79 +16,78 @@ base_path = Path("app/models")
 
 class ReconstructionModule:
     def __init__(self):
-        self.resolution_model = self.load_resolution_model()
-        self.inpainting_model = self.load_inpainting_model()
+        self.resolution_model = self._load_model(SuperResAutoencoder, "super_hiper_resolutioner_state_dict.pth")
+        self.inpainting_model = self._load_model(Generator, "super_hiper_inpainter_state_dict.pth")
         self.classification_model, self.pca, self.kmeans = self.load_classification_model()
 
-        self.to_input = v2.Compose([
-            v2.ToImage(),
-            v2.ToDtype(torch.float32, scale=True),
+        self.preprocess = v2.Compose([
+            v2.ToTensor(),
+            v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
 
-    def load_classification_model(self):
-        path = base_path / "super_hiper_classifier_state_dict.pth"
-        model = VQVAE()
+    def _load_model(self, model_class, filename):
+        path = base_path / filename
+        model = model_class()
         model.load_state_dict(torch.load(path, weights_only=True))
-        model = model.to(device)
+        model.to(device)
         model.eval()
+        return model
 
-        path = base_path / "pca.pkl"
-        with open(path, "rb") as f:
+    def load_classification_model(self):
+        model = self._load_model(VQVAE, "super_hiper_classifier_state_dict.pth")
+
+        with open(base_path / "pca.pkl", "rb") as f:
             pca = pickle.load(f)
 
-        path = base_path / "kmeans.pkl"
-        with open(path, "rb") as f:
+        with open(base_path / "kmeans.pkl", "rb") as f:
             kmeans = pickle.load(f)
 
         return model, pca, kmeans
 
-    def classification(self, image : Image):
-        image = self.to_input(image)
-        image = image.unsqueeze(0).to(device)
-        embedding = self.classification_model(image)
+    @staticmethod
+    def tensor_to_pil(image_tensor: torch.Tensor, mean=None, std=None) -> Img:
+        image_tensor = image_tensor.cpu()
+        if mean and std:
+            mean = torch.tensor(mean).view(3, 1, 1)
+            std = torch.tensor(std).view(3, 1, 1)
+            image_tensor = image_tensor * std + mean
+
+        image_tensor = image_tensor.clamp(0, 1)
+        image = image_tensor.permute(1, 2, 0).cpu().numpy()
+        image = (image * 255).astype(np.uint8)
+        return Img.fromarray(image)
+
+    def classification(self, image_tensor: torch.Tensor) -> int:
+        image_tensor = image_tensor.unsqueeze(0).to(device)
+        embedding = self.classification_model(image_tensor).detach().cpu().numpy()
         embedding = self.pca.transform(embedding)
-        cluster_id = self.kmeans.predict(embedding)
-        return cluster_id
+        return self.kmeans.predict(embedding)[0]
 
-    def load_resolution_model(self):
-        path = base_path / "super_hiper_resolutioner_state_dict.pth"
-        model = SuperResAutoencoder()
-        model.load_state_dict(torch.load(path, weights_only=True))
-        model = model.to(device)
-        model.eval()
-        return model
+    def resolution(self, image_tensor: torch.Tensor) -> torch.Tensor:
+        image_tensor = image_tensor.unsqueeze(0).to(device)
+        output_tensor = self.resolution_model(image_tensor).detach().squeeze(0)
+        return output_tensor
 
-    def resolution(self, image : Image):
-        image = self.to_input(image)
-        image = image.unsqueeze(0).to(device)
-        new_image = self.resolution_model(image)
-        new_image = new_image.detach().squeeze(0).cpu().permute(1,2,0).numpy()
-        return new_image
+    def inpainting(self, image_tensor: torch.Tensor, cluster_id: int, mask_tensor: torch.Tensor) -> torch.Tensor:
+        cluster_tensor = torch.tensor([cluster_id], dtype=torch.float32).to(device)
+        input_tensor = torch.cat([image_tensor, mask_tensor], dim=0).unsqueeze(0).to(device)
+        output_tensor = self.inpainting_model(input_tensor, cluster_tensor).detach().squeeze(0)
+        return output_tensor
 
-    def load_inpainting_model(self):
-        path = base_path / "super_hiper_inpainter_state_dict.pth"
-        model = Generator()
-        model.load_state_dict(torch.load(path, weights_only=True))
-        model = model.to(device)
-        model.eval()
-        return model
+    def pipeline(self, artwork: Artwork, is_inpainted: bool, is_super: bool) -> Artwork:
+        image_tensor = self.preprocess(artwork.image)
 
-    def inpainting(self, image : Image, cluster_id : int, mask : Image):
-        image = self.to_input(image)
-        cluster = torch.tensor(cluster_id).unsqueeze(0).to(device)
-        mask = self.to_input(mask)
-        damaged_image = torch.cat([image, mask], dim=0)
-        damaged_image = damaged_image.unsqueeze(0).to(device)
-        new_image = self.inpainting_model(damaged_image, cluster)
-        new_image = new_image.detach().squeeze(0).cpu().permute(1,2,0).numpy()
-        return new_image
-
-    def pipeline(self, artwork: Artwork, is_inpainted: bool, is_super: bool):
-        image = artwork.image
-        cluster_id = self.classification(image)
         if is_inpainted:
-            image = self.inpainting(image, cluster_id, artwork.mask)
+            mask_tensor = self.preprocess(artwork.mask)
+            cluster_id = self.classification(image_tensor)
+            image_tensor = self.inpainting(image_tensor, cluster_id, mask_tensor)
+
         if is_super:
-            image = self.resolution(image)
-        artwork.result = image
+            image_tensor = self.resolution(image_tensor)
+
+        artwork.result = self.tensor_to_pil(
+            image_tensor,
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
         return artwork

@@ -31,36 +31,32 @@ def get_artwork(data):
 class WikiArtDataset(Dataset):
     def __init__(self, dataset):
         self.dataset = dataset
+        self.transform = v2.Compose([
+            v2.Resize((224, 224)),
+        ])
 
     def __len__(self):
         return len(self.dataset)
 
     def __getitem__(self, idx):
-        image = self.dataset[idx]["image"]
-
-        transform = v2.Compose([
-            v2.Resize((224, 224)),
-        ])
-
-        image = transform(image)
+        data = self.dataset[idx]
+        image = self.transform(data["image"])
         image, mask = self.apply_damage(image)
 
-        artwork = Artwork(
+        return Artwork(
             image=image,
             mask=mask,
-            title=self.dataset[idx]["title"],
-            artist=self.dataset[idx]["artist"],
-            date=self.dataset[idx]["date"],
-            style=self.dataset[idx]["style"],
-            genre=self.dataset[idx]["genre"],
+            title=data.get("title"),
+            artist=data.get("artist"),
+            date=data.get("date"),
+            style=data.get("style"),
+            genre=data.get("genre"),
         )
 
-        return artwork
-
     def apply_damage(self, image):
-        img = np.array(image)
+        img = np.array(image, dtype=np.uint8)
         height, width, _ = img.shape
-        mask = np.ones((height, width), dtype=np.uint8)
+        mask = np.ones((height, width), dtype=np.uint8) * 255
 
         max_area = int(0.16 * height * width)
         current_area = 0
@@ -69,7 +65,7 @@ class WikiArtDataset(Dataset):
 
         while current_area < max_area and num_shapes > 0:
             shape_type = random.choice(["circle", "ellipse", "rectangle"])
-            temp_mask = np.ones_like(mask)
+            temp_mask = np.ones_like(mask, dtype=np.uint8) * 255
             center = (
                 random.randint(max_size, width - max_size),
                 random.randint(max_size, height - max_size)
@@ -101,7 +97,6 @@ class WikiArtDataset(Dataset):
             num_shapes -= 1
 
         img[mask == 0] = [255, 255, 255]
-        mask = mask * 255
         return Image.fromarray(img), Image.fromarray(mask)
 
 def roll_artwork(data_len=10):

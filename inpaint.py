@@ -53,11 +53,11 @@ to_input = v2.Compose([
 ])
 
 train_dataset = InpaintingDataset(train_df, transform=transform, to_input=to_input)
-train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=10)
+train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=16)
 val_dataset = InpaintingDataset(val_df, transform=transform, to_input=to_input)
-val_dataloader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=10)
+val_dataloader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=16)
 test_dataset = InpaintingDataset(test_df, transform=transform, to_input=to_input)
-test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=False, num_workers=10)
+test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=False, num_workers=16)
 
 import matplotlib.pyplot as plt
 

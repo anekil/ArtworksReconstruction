@@ -66,9 +66,13 @@ class ReconstructionModule:
 
     def inpainting(self, image_tensor: torch.Tensor, cluster_id: int, mask_tensor: torch.Tensor) -> torch.Tensor:
         cluster_tensor = torch.tensor([cluster_id], dtype=torch.int).to(device)
-        input_tensor = torch.cat([image_tensor, mask_tensor], dim=0).unsqueeze(0).to(device)
+        mask_tensor = mask_tensor.to(device)
+        image_tensor = image_tensor.to(device)
+
+        input_tensor = torch.cat([image_tensor, mask_tensor], dim=0).unsqueeze(0)
         output_tensor = self.inpainting_model(input_tensor, cluster_tensor).detach().squeeze(0)
-        return output_tensor
+        blended_output = image_tensor * mask_tensor + output_tensor * (1 - mask_tensor)
+        return blended_output
 
     def pipeline(self, artwork: Artwork, is_inpainted: bool, is_super: bool) -> Artwork:
         image_tensor = self.preprocess(artwork.image)

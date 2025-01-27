@@ -6,6 +6,9 @@ import streamlit as st
 from datasets import load_dataset
 from torch.utils.data import Dataset
 from torchvision.transforms import v2
+import io
+import base64
+from st_clickable_images import clickable_images
 
 
 class Artwork:
@@ -39,9 +42,20 @@ class WikiArtDataset(Dataset):
         return len(self.dataset)
 
     def __getitem__(self, idx):
-        data = self.dataset[idx]
+        if isinstance(idx, int):
+            data = self.dataset[idx]
+            return self._process_data(data, idx)
+        elif isinstance(idx, slice):
+            indices = range(*idx.indices(len(self)))
+            return [self._process_data(self.dataset[i], i) for i in indices]
+        elif isinstance(idx, list):
+            return [self._process_data(self.dataset[i], i) for i in idx]
+        else:
+            raise TypeError(f"Unsupported index type: {type(idx)}")
+
+    def _process_data(self, data, idx):
         image = self.transform(data["image"])
-        image, mask = self.apply_damage(image)
+        image, mask = self.apply_damage(image, idx)
 
         return Artwork(
             image=image,
@@ -53,7 +67,19 @@ class WikiArtDataset(Dataset):
             genre=data.get("genre"),
         )
 
-    def apply_damage(self, image):
+    def get_images(self, idx):
+        if isinstance(idx, int):
+            return self.dataset[idx].image
+        elif isinstance(idx, slice):
+            indices = range(*idx.indices(len(self)))
+            return [self.dataset[i].image for i in indices]
+        elif isinstance(idx, list):
+            return [self.dataset[i].image for i in idx]
+
+    def apply_damage(self, image, idx):
+        seed = hash(str(idx)) % (2**32)
+        random.seed(seed)
+
         img = np.array(image, dtype=np.uint8)
         height, width, _ = img.shape
         mask = np.ones((height, width), dtype=np.uint8) * 255
@@ -114,3 +140,24 @@ def align_dimensions(image1, image2):
     image2 = cv2.resize(image2, (width, height))
 
     return image1, image2
+
+def pil_to_base64(img: Image.Image) -> str:
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    buffer.seek(0)
+    img_str = base64.b64encode(buffer.read()).decode()
+    return f"data:image/png;base64,{img_str}"
+
+def display_clickable_artworks(artworks):
+    images = [pil_to_base64(artwork.image) for artwork in artworks]
+
+    clicked_index = clickable_images(
+        images,
+        titles=[artwork.title for artwork in artworks],
+        div_style={"display": "flex", "flex-wrap": "wrap"},
+        img_style={"margin": "5px", "height": "200px"},
+    )
+
+    if clicked_index != -1:
+        return artworks[clicked_index]
+    return None

@@ -21,7 +21,7 @@ merged_df = df.merge(cluster_df, left_index=True, right_on="idx", how="left")
 df = merged_df[['image', 'cluster']]
 
 total_size = len(df)
-new_size = total_size // 2
+new_size = total_size // 4
 df = df.sample(n=new_size, random_state=42)
 grouped = df.groupby('cluster')
 min_samples_per_cluster = grouped.size().min()

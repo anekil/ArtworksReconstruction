@@ -32,7 +32,7 @@ class WikiArtDataset(Dataset):
     def __init__(self, dataset):
         self.dataset = dataset
         self.transform = v2.Compose([
-            v2.Resize((224, 224)),
+            v2.Resize((256, 256)),
         ])
 
     def __len__(self):

@@ -1,10 +1,8 @@
 #%%
 import comet_ml
-import numpy as np
 import torch
 import os
 
-from comet_ml import Optimizer
 from datasets import load_dataset
 from pytorch_lightning.loggers import CometLogger
 from torchvision.transforms import v2
@@ -30,8 +28,8 @@ val_df = df[train_len:train_len+val_len].copy(deep=True)
 test_df = df[train_len+val_len:].copy(deep=True)
 
 transform = v2.Compose([
-    v2.RandomCrop((224, 224)),
-    v2.Resize((224, 224)),
+    v2.RandomCrop((256, 256)),
+    v2.Resize((256, 256)),
     v2.RandomHorizontalFlip(),
 ])
 
@@ -50,7 +48,6 @@ test_dataloader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_wor
 import matplotlib.pyplot as plt
 
 damaged_img, original_img, _ = train_dataset[0]
-print(damaged_img.shape)
 mask = damaged_img[3, :, :]
 damaged_img = damaged_img[:3, :, :]
 

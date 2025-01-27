@@ -1,6 +1,6 @@
 import pickle
 from pathlib import Path
-
+import streamlit as st
 import numpy as np
 import torch
 from PIL import Image as Img
@@ -22,7 +22,6 @@ class ReconstructionModule:
 
         self.preprocess = v2.Compose([
             v2.ToTensor(),
-            v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
 
     def _load_model(self, model_class, filename):
@@ -45,13 +44,7 @@ class ReconstructionModule:
         return model, pca, kmeans
 
     @staticmethod
-    def tensor_to_pil(image_tensor: torch.Tensor, mean=None, std=None) -> Img:
-        image_tensor = image_tensor.cpu()
-        if mean and std:
-            mean = torch.tensor(mean).view(3, 1, 1)
-            std = torch.tensor(std).view(3, 1, 1)
-            image_tensor = image_tensor * std + mean
-
+    def tensor_to_pil(image_tensor: torch.Tensor) -> Img:
         image_tensor = image_tensor.clamp(0, 1)
         image = image_tensor.permute(1, 2, 0).cpu().numpy()
         image = (image * 255).astype(np.uint8)
@@ -59,8 +52,11 @@ class ReconstructionModule:
 
     def classification(self, image_tensor: torch.Tensor) -> int:
         image_tensor = image_tensor.unsqueeze(0).to(device)
-        embedding = self.classification_model(image_tensor).detach().cpu().numpy()
-        embedding = self.pca.transform(embedding)
+        latents = self.classification_model.encode(image_tensor)
+        latents0 = torch.flatten(latents[0], start_dim=1).cpu()
+        latents1 = torch.flatten(latents[1], start_dim=1).cpu()
+        latents = torch.cat([latents0, latents1], dim=1).detach().numpy()
+        embedding = self.pca.transform(latents)
         return self.kmeans.predict(embedding)[0]
 
     def resolution(self, image_tensor: torch.Tensor) -> torch.Tensor:
@@ -69,7 +65,7 @@ class ReconstructionModule:
         return output_tensor
 
     def inpainting(self, image_tensor: torch.Tensor, cluster_id: int, mask_tensor: torch.Tensor) -> torch.Tensor:
-        cluster_tensor = torch.tensor([cluster_id], dtype=torch.float32).to(device)
+        cluster_tensor = torch.tensor([cluster_id], dtype=torch.int).to(device)
         input_tensor = torch.cat([image_tensor, mask_tensor], dim=0).unsqueeze(0).to(device)
         output_tensor = self.inpainting_model(input_tensor, cluster_tensor).detach().squeeze(0)
         return output_tensor
@@ -85,9 +81,5 @@ class ReconstructionModule:
         if is_super:
             image_tensor = self.resolution(image_tensor)
 
-        artwork.result = self.tensor_to_pil(
-            image_tensor,
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225]
-        )
+        artwork.result = self.tensor_to_pil(image_tensor)
         return artwork

@@ -55,10 +55,7 @@ class InpaintingDataset(torch.utils.data.Dataset):
         img[mask == 0] = [255, 255, 255]
 
         mask = mask * 255
-        kernel = np.ones((5,5), np.uint8)
-        dilated_mask = cv2.dilate(mask, kernel, iterations=1)
-        blurred_mask = cv2.GaussianBlur(dilated_mask, (5,5), sigmaX=0)
-        return Image.fromarray(img), Image.fromarray(blurred_mask)
+        return Image.fromarray(img), Image.fromarray(mask)
 
     def __getitem__(self, idx):
         row = self.df.iloc[idx]

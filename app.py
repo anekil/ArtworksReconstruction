@@ -88,10 +88,10 @@ if selected_artwork:
                 label1="Damaged artwork",
                 img2=img2,
                 label2="Reconstructed artwork",
-                width=600
+                width=800
             )
         else:
-            st.image(artwork.image, width=600)
+            st.image(artwork.image, width=800)
     with col3:
         st.write(' ')
 

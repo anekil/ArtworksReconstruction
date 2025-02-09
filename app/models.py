@@ -24,6 +24,7 @@ class ReconstructionModule:
             v2.ToTensor(),
         ])
 
+    @st.cache
     def _load_model(self, model_class, filename):
         path = base_path / filename
         model = model_class()

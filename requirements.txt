@@ -1,0 +1,13 @@
+torch
+torchvision
+lightning
+opencv-python
+datasets
+pandas
+matplotlib
+comet_ml
+einops
+scikit-learn
+streamlit
+st-clickable-images
+streamlit-image-comparison

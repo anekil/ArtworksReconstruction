@@ -27,7 +27,7 @@ class ReconstructionModule:
     def _load_model(self, model_class, filename):
         path = base_path / filename
         model = model_class()
-        model.load_state_dict(torch.load(path, weights_only=True))
+        model.load_state_dict(torch.load(path, map_location=device, weights_only=True))
         model.to(device)
         model.eval()
         return model

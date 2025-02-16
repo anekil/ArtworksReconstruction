@@ -24,7 +24,7 @@ def load_model(model_class, filename):
     return model
 
 @st.cache_resource
-def load_classification_model(self):
+def load_classification_model():
     model = self._load_model(VQVAE, "super_hiper_classifier_state_dict.pth")
 
     with open(base_path / "pca.pkl", "rb") as f:

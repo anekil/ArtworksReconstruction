@@ -14,36 +14,39 @@ from superresolution.SuperResolutionTrainer import SuperResAutoencoder
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 base_path = Path("app/models")
 
+@st.cache_resource
+def load_model(model_class, filename):
+    path = base_path / filename
+    model = model_class()
+    model.load_state_dict(torch.load(path, map_location=device, weights_only=True))
+    model.to(device)
+    model.eval()
+    return model
+
+@st.cache_resource
+def load_classification_model(self):
+    model = self._load_model(VQVAE, "super_hiper_classifier_state_dict.pth")
+
+    with open(base_path / "pca.pkl", "rb") as f:
+        pca = pickle.load(f)
+
+    with open(base_path / "kmeans.pkl", "rb") as f:
+        kmeans = pickle.load(f)
+
+    return model, pca, kmeans
+
+
 class ReconstructionModule:
     def __init__(self):
-        self.resolution_model = self._load_model(SuperResAutoencoder, "super_hiper_resolutioner_state_dict.pth")
-        self.inpainting_model = self._load_model(Generator, "super_hiper_inpainter_state_dict.pth")
-        self.classification_model, self.pca, self.kmeans = self.load_classification_model()
+        self.resolution_model = load_model(SuperResAutoencoder, "super_hiper_resolutioner_state_dict.pth")
+        self.inpainting_model = load_model(Generator, "super_hiper_inpainter_state_dict.pth")
+        self.classification_model, self.pca, self.kmeans = load_classification_model()
 
         self.preprocess = v2.Compose([
             v2.ToTensor(),
         ])
 
-    @st.cache_resource
-    def _load_model(self, model_class, filename):
-        path = base_path / filename
-        model = model_class()
-        model.load_state_dict(torch.load(path, map_location=device, weights_only=True))
-        model.to(device)
-        model.eval()
-        return model
-
-    def load_classification_model(self):
-        model = self._load_model(VQVAE, "super_hiper_classifier_state_dict.pth")
-
-        with open(base_path / "pca.pkl", "rb") as f:
-            pca = pickle.load(f)
-
-        with open(base_path / "kmeans.pkl", "rb") as f:
-            kmeans = pickle.load(f)
-
-        return model, pca, kmeans
-
+    
     @staticmethod
     def tensor_to_pil(image_tensor: torch.Tensor) -> Img:
         image_tensor = image_tensor.clamp(0, 1)
